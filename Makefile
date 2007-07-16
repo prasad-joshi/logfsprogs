@@ -19,8 +19,10 @@ all: $(BIN)
 $(BIN):	$(OBJ)
 	$(CC) $(CFLAGS) -lz -o $@ $^
 
+mkfs.o: kerncompat.h
 
 %.o: %.c
+	sparse $(CFLAGS) -c -o $@ $<
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 

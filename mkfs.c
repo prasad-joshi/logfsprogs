@@ -1,9 +1,10 @@
 /*
  * LogFS mkfs
  *
- * Copyright (c) 2007 Jörn Engel <joern@logfs.org>
+ * Copyright (c) 2007 Joern Engel <joern@logfs.org>
  */
 
+#define __CHECK_ENDIAN__
 #define _LARGEFILE64_SOURCE
 #define __USE_FILE_OFFSET64
 #include <asm/types.h>
@@ -48,7 +49,7 @@ static unsigned segshift = 17;
 static unsigned blockshift = 12;
 static unsigned writeshift = 8;
 
-void *erase_buf;
+static void *erase_buf;
 static void *wbuf;
 static u64 wbuf_ofs;
 
@@ -62,7 +63,7 @@ static u16 version;
 
 ////////////////////////////////////////////////////////////////////////////////
 
-int logfs_compress(void *in, void *out, size_t inlen, size_t outlen)
+static int logfs_compress(void *in, void *out, size_t inlen, size_t outlen)
 {
 	struct z_stream_s stream;
 	int err, ret;
@@ -136,12 +137,12 @@ static int bdev_erase(int fd, u64 ofs, size_t size)
 	return bdev_write(fd, ofs, size, erase_buf);
 }
 
-const struct logfs_device_operations mtd_ops = {
+static const struct logfs_device_operations mtd_ops = {
 	.write = bdev_write,
 	.erase = mtd_erase,
 };
 
-const struct logfs_device_operations bdev_ops = {
+static const struct logfs_device_operations bdev_ops = {
 	.write = bdev_write,
 	.erase = bdev_erase,
 };
@@ -195,7 +196,7 @@ static int make_rootdir(int fd, const struct logfs_device_operations *ops)
 	oh = (void*)(sh+1);
 	di = (void*)(sh+2);
 
-	sh->len = 0;
+	sh->pad = 0;
 	sh->type = OBJ_OSTORE;
 	sh->level = LOGFS_MAX_LEVELS;
 	sh->segno = cpu_to_be32(segment_offset[OFS_ROOTDIR] >> segshift);
@@ -572,10 +573,10 @@ int main(int argc, char **argv)
 		int oi = 1;
 		char short_opts[] = "b:s:w:";
 		static const struct option long_opts[] = {
-			{"blockshift",	1, 0, 'b'},
-			{"segshift",	1, 0, 's'},
-			{"writeshift",	1, 0, 'w'},
-			{0, 0, 0, 0}
+			{"blockshift",	1, NULL, 'b'},
+			{"segshift",	1, NULL, 's'},
+			{"writeshift",	1, NULL, 'w'},
+			{ }
 		};
 		int c = getopt_long(argc, argv, short_opts, long_opts, &oi);
 		if (c == -1)

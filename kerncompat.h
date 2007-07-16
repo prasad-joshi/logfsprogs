@@ -129,6 +129,7 @@ static inline int test_bit(int nr, const volatile unsigned long *addr)
 #define __CHECK_ENDIAN__
 #define __bitwise __bitwise__
 #else
+#undef __bitwise
 #define __bitwise
 #endif
 
