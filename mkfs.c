@@ -24,8 +24,8 @@
 #include <zlib.h>
 
 #include "kerncompat.h"
-#include "/usr/src/kernel/logfs/include/mtd/mtd-abi.h"
-#include "/usr/src/kernel/logfs/include/linux/logfs.h"
+#include <mtd/mtd-abi.h>
+#include <linux/logfs.h>
 
 enum {
 	OFS_SB = 0,
@@ -549,8 +549,17 @@ static void open_device(const char *name)
 
 static void usage(void)
 {
-	printf("mklogfs <options> <device>\n");
-	exit(EXIT_FAILURE);
+	printf(
+"mklogfs <options> <device>\n"
+"\n"
+"Options:\n"
+"  -h --help            display this help\n"
+"  -s --segshift        segment shift in bits\n"
+"  -w --writeshift      write shift in bits\n"
+"\n"
+"Segment size and write size are powers of two.  To specify them, the\n"
+"appropriate power is specified with the \"-s\" or \"-w\" options, instead\n"
+"of the actual size.\n");
 }
 
 /*
@@ -571,9 +580,10 @@ int main(int argc, char **argv)
 	check_crc32();
 	for (;;) {
 		int oi = 1;
-		char short_opts[] = "b:s:w:";
+		char short_opts[] = "bh:s:w:";
 		static const struct option long_opts[] = {
 			{"blockshift",	1, NULL, 'b'},
+			{"help",	0, NULL, 'h'},
 			{"segshift",	1, NULL, 's'},
 			{"writeshift",	1, NULL, 'w'},
 			{ }
@@ -585,6 +595,9 @@ int main(int argc, char **argv)
 		case 'b':
 			user_blockshift = strtoul(optarg, NULL, 0);
 			break;
+		case 'h':
+			usage();
+			exit(EXIT_SUCCESS);
 		case 's':
 			user_segshift = strtoul(optarg, NULL, 0);
 			break;
@@ -597,8 +610,10 @@ int main(int argc, char **argv)
 		}
 	}
 
-	if (optind != argc - 1)
+	if (optind != argc - 1) {
 		usage();
+		exit(EXIT_FAILURE);
+	}
 
 	open_device(argv[optind]);
 
