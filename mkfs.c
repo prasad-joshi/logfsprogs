@@ -492,6 +492,7 @@ static void mkfs(int fd, const struct logfs_device_operations *ops)
 	if (ret)
 		fail("could not create superblock");
 
+	fsync(fd);
 	printf("\nFinished generating LogFS\n");
 }
 
