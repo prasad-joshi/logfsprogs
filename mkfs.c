@@ -186,7 +186,7 @@ static int make_rootdir(int fd, const struct logfs_device_operations *ops)
 	struct logfs_segment_header *sh;
 	struct logfs_object_header *oh;
 	struct logfs_disk_inode *di;
-	size_t size = blocksize + 2*LOGFS_HEADERSIZE;
+	size_t size = blocksize + LOGFS_HEADERSIZE + LOGFS_SEGMENT_HEADERSIZE;
 	int ret;
 
 	sh = calloc(size, 1);
@@ -194,7 +194,7 @@ static int make_rootdir(int fd, const struct logfs_device_operations *ops)
 		return -ENOMEM;
 
 	oh = (void*)(sh+1);
-	di = (void*)(sh+2);
+	di = (void*)(oh+1);
 
 	sh->pad = 0;
 	sh->type = OBJ_OSTORE;
@@ -202,18 +202,20 @@ static int make_rootdir(int fd, const struct logfs_device_operations *ops)
 	sh->segno = cpu_to_be32(segment_offset[OFS_ROOTDIR] >> segshift);
 	sh->ec = 0;
 	sh->gec = 0;
-	sh->crc = logfs_crc32(sh, LOGFS_HEADERSIZE, 4);
+	sh->crc = logfs_crc32(sh, LOGFS_SEGMENT_HEADERSIZE, 4);
+
+	di->di_flags	= cpu_to_be32(LOGFS_IF_VALID);
+	di->di_mode	= cpu_to_be16(S_IFDIR | 0755);
+	di->di_refcount	= cpu_to_be32(2);
 
 	oh->len = cpu_to_be16(blocksize);
 	oh->type = OBJ_BLOCK;
 	oh->compr = COMPR_NONE;
 	oh->ino = cpu_to_be64(LOGFS_INO_MASTER);
 	oh->pos = cpu_to_be64(LOGFS_INO_ROOT);
-	oh->crc = logfs_crc32(oh, LOGFS_HEADERSIZE, 4);
+	oh->crc = logfs_crc32(oh, LOGFS_HEADERSIZE - 4, 4);
+	oh->data_crc = logfs_crc32(di, blocksize, 0);
 
-	di->di_flags	= cpu_to_be32(LOGFS_IF_VALID);
-	di->di_mode	= cpu_to_be16(S_IFDIR | 0755);
-	di->di_refcount	= cpu_to_be32(2);
 	ret = buf_write(fd, ops, segment_offset[OFS_ROOTDIR], sh, size);
 	free(sh);
 	return ret;
@@ -265,8 +267,8 @@ static size_t je_anchor(void *_da, u16 *type)
 	da->da_last_ino	= cpu_to_be64(LOGFS_RESERVED_INOS);
 	da->da_size	= cpu_to_be64((LOGFS_INO_ROOT+1) * blocksize);
 	da->da_used_bytes = cpu_to_be64(blocksize + LOGFS_HEADERSIZE);
-	da->da_data[LOGFS_INO_ROOT] =
-		cpu_to_be64(segment_offset[OFS_ROOTDIR] + LOGFS_HEADERSIZE);
+	da->da_data[LOGFS_INO_ROOT] = cpu_to_be64(segment_offset[OFS_ROOTDIR]
+				+ LOGFS_SEGMENT_HEADERSIZE);
 	*type = JE_ANCHOR;
 	return sizeof(*da);
 }
@@ -372,7 +374,7 @@ static int make_super(int fd, const struct logfs_device_operations *ops)
 	memset(ds, 0, sizeof(*ds));
 
 	ds->ds_magic		= cpu_to_be64(LOGFS_MAGIC);
-	ds->ds_ifile_levels	= 1; /* 2+1, 1GiB */
+	ds->ds_ifile_levels	= 3; /* 2+1, 1GiB */
 	ds->ds_iblock_levels	= 4; /* 3+1, 512GiB */
 	ds->ds_data_levels	= 1; /* old, young, unknown */
 
@@ -606,8 +608,7 @@ int main(int argc, char **argv)
 			user_writeshift = strtoul(optarg, NULL, 0);
 			break;
 		default:
-			fprintf(stderr, "BUG\n");
-			exit(EXIT_FAILURE);
+			fail("unknown option\n");
 		}
 	}
 
