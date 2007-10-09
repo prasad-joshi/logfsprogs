@@ -22,7 +22,7 @@ $(BIN):	$(OBJ)
 mkfs.o: kerncompat.h
 
 %.o: %.c
-	sparse $(CFLAGS) -c -o $@ $<
+	cgcc $(CFLAGS) -c -o $@ $<
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 

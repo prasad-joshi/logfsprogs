@@ -25,7 +25,7 @@
 
 #include "kerncompat.h"
 #include <mtd/mtd-abi.h>
-#include <linux/logfs.h>
+#include "logfs_abi.h"
 
 enum {
 	OFS_SB = 0,
@@ -60,6 +60,7 @@ static int bb_count;
 
 static u16 version;
 
+static int compress_rootdir;
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -205,6 +206,8 @@ static int make_rootdir(int fd, const struct logfs_device_operations *ops)
 	sh->crc = logfs_crc32(sh, LOGFS_SEGMENT_HEADERSIZE, 4);
 
 	di->di_flags	= cpu_to_be32(LOGFS_IF_VALID);
+	if (compress_rootdir)
+		di->di_flags |= cpu_to_be32(LOGFS_IF_COMPRESSED);
 	di->di_mode	= cpu_to_be16(S_IFDIR | 0755);
 	di->di_refcount	= cpu_to_be32(2);
 
@@ -212,7 +215,7 @@ static int make_rootdir(int fd, const struct logfs_device_operations *ops)
 	oh->type = OBJ_BLOCK;
 	oh->compr = COMPR_NONE;
 	oh->ino = cpu_to_be64(LOGFS_INO_MASTER);
-	oh->pos = cpu_to_be64(LOGFS_INO_ROOT);
+	oh->bix = cpu_to_be64(LOGFS_INO_ROOT);
 	oh->crc = logfs_crc32(oh, LOGFS_HEADERSIZE - 4, 4);
 	oh->data_crc = logfs_crc32(di, blocksize, 0);
 
@@ -556,6 +559,7 @@ static void usage(void)
 "mklogfs <options> <device>\n"
 "\n"
 "Options:\n"
+"  -c --compress	turn compression on\n"
 "  -h --help            display this help\n"
 "  -s --segshift        segment shift in bits\n"
 "  -w --writeshift      write shift in bits\n"
@@ -583,9 +587,10 @@ int main(int argc, char **argv)
 	check_crc32();
 	for (;;) {
 		int oi = 1;
-		char short_opts[] = "bh:s:w:";
+		char short_opts[] = "bch:s:w:";
 		static const struct option long_opts[] = {
 			{"blockshift",	1, NULL, 'b'},
+			{"compress",	0, NULL, 'c'},
 			{"help",	0, NULL, 'h'},
 			{"segshift",	1, NULL, 's'},
 			{"writeshift",	1, NULL, 'w'},
@@ -598,6 +603,8 @@ int main(int argc, char **argv)
 		case 'b':
 			user_blockshift = strtoul(optarg, NULL, 0);
 			break;
+		case 'c':
+			compress_rootdir = 1;
 		case 'h':
 			usage();
 			exit(EXIT_SUCCESS);
