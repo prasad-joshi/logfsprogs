@@ -61,6 +61,7 @@ static int bb_count;
 static u16 version;
 
 static int compress_rootdir;
+static int quick_bad_block_scan;
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -428,6 +429,8 @@ static int bad_block_scan(int fd, const struct logfs_device_operations *ops)
 			/* good segment */
 			if (seg < OFS_COUNT)
 				segment_offset[seg++] = ofs;
+			else if (quick_bad_block_scan)
+				return 0;
 		}
 	}
 	return 0;
@@ -561,6 +564,7 @@ static void usage(void)
 "Options:\n"
 "  -c --compress	turn compression on\n"
 "  -h --help            display this help\n"
+"  -q --quick		skip bad block scan\n"
 "  -s --segshift        segment shift in bits\n"
 "  -w --writeshift      write shift in bits\n"
 "\n"
@@ -587,11 +591,11 @@ int main(int argc, char **argv)
 	check_crc32();
 	for (;;) {
 		int oi = 1;
-		char short_opts[] = "bch:s:w:";
+		char short_opts[] = "chqs:w:";
 		static const struct option long_opts[] = {
-			{"blockshift",	1, NULL, 'b'},
 			{"compress",	0, NULL, 'c'},
 			{"help",	0, NULL, 'h'},
+			{"quick",	0, NULL, 'q'},
 			{"segshift",	1, NULL, 's'},
 			{"writeshift",	1, NULL, 'w'},
 			{ }
@@ -605,9 +609,13 @@ int main(int argc, char **argv)
 			break;
 		case 'c':
 			compress_rootdir = 1;
+			break;
 		case 'h':
 			usage();
 			exit(EXIT_SUCCESS);
+		case 'q':
+			quick_bad_block_scan = 1;
+			break;
 		case 's':
 			user_segshift = strtoul(optarg, NULL, 0);
 			break;
