@@ -351,7 +351,8 @@ static int make_journal(int fd, const struct logfs_device_operations *ops)
 	jpos = 0;
 	/* erasecount is not written - implicitly set to 0 */
 	/* neither are summary, index, wbuf */
-	jpos += write_je(jpos, scratch, journal, je_wbuf);
+	if (writesize > 1)
+		jpos += write_je(jpos, scratch, journal, je_wbuf);
 	jpos += write_je(jpos, scratch, journal, je_badsegments);
 	jpos += write_je(jpos, scratch, journal, je_anchor);
 	jpos += write_je(jpos, scratch, journal, je_dynsb);
