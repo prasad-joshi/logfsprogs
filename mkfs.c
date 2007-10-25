@@ -564,7 +564,7 @@ static void usage(void)
 "mklogfs <options> <device>\n"
 "\n"
 "Options:\n"
-"  -c --compress	turn compression on\n"
+"  -c --compress        turn compression on\n"
 "  -h --help            display this help\n"
 "  -q --quick		skip bad block scan\n"
 "  -s --segshift        segment shift in bits\n"
@@ -572,7 +572,8 @@ static void usage(void)
 "\n"
 "Segment size and write size are powers of two.  To specify them, the\n"
 "appropriate power is specified with the \"-s\" or \"-w\" options, instead\n"
-"of the actual size.\n");
+"of the actual size.  E.g. \"mklogfs -w8\" will set a writesize\n"
+"of 256 Bytes (2^8).\n\n");
 }
 
 /*
