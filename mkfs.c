@@ -47,7 +47,7 @@ static unsigned user_writeshift = -1;
 
 static unsigned segshift = 17;
 static unsigned blockshift = 12;
-static unsigned writeshift = 8;
+static unsigned writeshift = 0;
 
 static void *erase_buf;
 static void *wbuf;
