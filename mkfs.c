@@ -425,7 +425,7 @@ static int bad_block_scan(int fd, const struct logfs_device_operations *ops)
 			if (bb_count > 512)
 				return -EIO;
 			bb_array[bb_count++] = cpu_to_be32(ofs >> segshift);
-			printf("Bad block at %llx\n", ofs);
+			printf("Bad block at 0x%llx\n", ofs);
 		} else {
 			/* good segment */
 			if (seg < OFS_COUNT)
@@ -465,10 +465,11 @@ static void mkfs(int fd, const struct logfs_device_operations *ops)
 	fssize = no_segs << segshift;
 
 	printf("Will create filesystem with the following details:\n");
-	printf("fssize=   %8llx\n", fssize);
-	printf("segsize=  %8x\n", segsize);
-	printf("blocksize=%8x\n", blocksize);
-	printf("writesize=%8x\n", writesize);
+	printf("              hex:   decimal:\n");
+	printf("fssize=   %8llx %10lld\n", fssize, fssize);
+	printf("segsize=  %8x %10d\n", segsize, segsize);
+	printf("blocksize=%8x %10d\n", blocksize, blocksize);
+	printf("writesize=%8x %10d\n", writesize, writesize);
 	printf("\n");
 	printf("Do you wish to continue (yes/no)\n");
 
