@@ -38,6 +38,7 @@ static u64 fssize;
 static u64 no_segs;
 
 static u32 segsize;
+static u32 erasesize;
 static u32 blocksize;
 static u32 writesize;
 
@@ -411,14 +412,48 @@ static int make_super(int fd, const struct logfs_device_operations *ops)
 
 /* main stuff */
 
+/*
+ * The superblock doesn't have to be segment-aligned.  So simply search the
+ * first non-bad eraseblock, completely ignoring segment size.
+ */
+static s64 superblock_scan(int fd, const struct logfs_device_operations *ops)
+{
+	s64 ofs, sb_ofs;
+	int err;
+
+	if (ops != &mtd_ops) {
+		sb_ofs = 0;
+		return 0;
+	}
+
+	for (ofs=0; ofs<fssize; ofs+=erasesize) {
+		err = ops->erase(fd, ofs, erasesize);
+		if (err)
+			continue;
+		/* first non-bad block */
+		sb_ofs = ofs;
+		/* erase remaining blocks in segment */
+		for (; ofs & (segsize-1); ofs+=erasesize)
+			ops->erase(fd, ofs, erasesize);
+		return sb_ofs;
+	}
+	/* all bad */
+	return -EIO;
+}
+
 static int bad_block_scan(int fd, const struct logfs_device_operations *ops)
 {
 	int seg, err;
-	u64 ofs;
+	s64 ofs, sb_ofs;
 
 	seg = 0;
 	bb_count = 0;
-	for (ofs=0; ofs<fssize; ofs+=segsize) {
+	sb_ofs = superblock_scan(fd, ops);
+	if (sb_ofs < 0)
+		return -EIO;
+
+	segment_offset[seg++] = sb_ofs;
+	for (ofs=ALIGN(sb_ofs+1, segsize); ofs<fssize; ofs+=segsize) {
 		err = ops->erase(fd, ofs, segsize);
 		if (err) {
 			/* bad segment */
@@ -535,6 +570,7 @@ static void open_device(const char *name)
 		if (err)
 			fail("mtd ioctl failed");
 
+		erasesize = mtd.erasesize;
 		segshift = ffs(mtd.erasesize) - 1;
 		if (mtd.erasesize != 1 << segshift)
 			fail("device erasesize must be a power of 2");
