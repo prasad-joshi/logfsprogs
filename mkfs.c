@@ -284,7 +284,7 @@ static size_t je_dynsb(void *_dynsb, u16 *type)
 	struct logfs_je_dynsb *dynsb = _dynsb;
 
 	memset(dynsb, 0, sizeof(*dynsb));
-	dynsb->ds_used_bytes	= cpu_to_be64(blocksize);
+	dynsb->ds_used_bytes	= cpu_to_be64(blocksize + LOGFS_HEADERSIZE);
 	*type = JE_DYNSB;
 	return sizeof(*dynsb);
 }
