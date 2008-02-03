@@ -118,6 +118,7 @@ struct logfs_device_operations {
 static int mtd_erase(int fd, u64 ofs, size_t size)
 {
 	struct erase_info_user ei;
+
 	ei.start = ofs;
 	ei.length = size;
 
@@ -427,15 +428,26 @@ static s64 superblock_scan(int fd, const struct logfs_device_operations *ops)
 	}
 
 	for (ofs=0; ofs<fssize; ofs+=erasesize) {
+		printf("\r%lld%% done. ", 100*ofs / fssize);
 		err = ops->erase(fd, ofs, erasesize);
-		if (err)
-			continue;
-		/* first non-bad block */
-		sb_ofs = ofs;
-		/* erase remaining blocks in segment */
-		for (; ofs & (segsize-1); ofs+=erasesize)
-			ops->erase(fd, ofs, erasesize);
-		return sb_ofs;
+		if (err) {
+			printf("Bad block at 0x%llx\n", ofs);
+			if ((ofs & (segsize-1)) == 0) {
+				/* bad segment */
+				if (bb_count > 512)
+					return -EIO;
+				bb_array[bb_count++] = cpu_to_be32(ofs >> segshift);
+			}
+		} else {
+			if (ofs)
+				printf("Superblock is at %llx\n", ofs);
+			/* first non-bad block */
+			sb_ofs = ofs;
+			/* erase remaining blocks in segment */
+			for (; ofs & (segsize-1); ofs+=erasesize)
+				ops->erase(fd, ofs, erasesize);
+			return sb_ofs;
+		}
 	}
 	/* all bad */
 	return -EIO;
@@ -454,6 +466,7 @@ static int bad_block_scan(int fd, const struct logfs_device_operations *ops)
 
 	segment_offset[seg++] = sb_ofs;
 	for (ofs=ALIGN(sb_ofs+1, segsize); ofs<fssize; ofs+=segsize) {
+		printf("\r%lld%% done. ", 100*ofs / fssize);
 		err = ops->erase(fd, ofs, segsize);
 		if (err) {
 			/* bad segment */
