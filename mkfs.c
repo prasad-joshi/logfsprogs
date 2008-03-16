@@ -63,8 +63,10 @@ static int bb_count;
 
 static u16 version;
 
+/* commandline options */
 static int compress_rootdir;
 static int quick_bad_block_scan;
+static int interactice_mode = 1;
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -521,11 +523,19 @@ static void mkfs(int fd, const struct logfs_device_operations *ops)
 	printf("blocksize=%8x %10d\n", blocksize, blocksize);
 	printf("writesize=%8x %10d\n", writesize, writesize);
 	printf("\n");
-	printf("Do you wish to continue (yes/no)\n");
 
-	scanf("%s", answer);
-	if (strcmp(answer, "yes"))
-		fail("aborting...");
+	if (interactice_mode) {
+		printf("Do you wish to continue (yes/no)\n");
+		scanf("%s", answer);
+		if (strcmp(answer, "yes"))
+			fail("aborting...");
+	}
+	if (quick_bad_block_scan) {
+		printf("mklogfs won't erase filesystem.  This may oops your kernel.\n");
+		scanf("%s", answer);
+		if (strcmp(answer, "yes"))
+			fail("aborting...");
+	}
 
 	wbuf = malloc(writesize);
 	if (!wbuf)
@@ -617,9 +627,10 @@ static void usage(void)
 "Options:\n"
 "  -c --compress        turn compression on\n"
 "  -h --help            display this help\n"
-"  -q --quick		skip bad block scan\n"
 "  -s --segshift        segment shift in bits\n"
 "  -w --writeshift      write shift in bits\n"
+"     --demo-mode	skip bad block scan; don't erase device\n"
+"     --non-interactive turn off safety question before writing\n"
 "\n"
 "Segment size and write size are powers of two.  To specify them, the\n"
 "appropriate power is specified with the \"-s\" or \"-w\" options, instead\n"
@@ -645,13 +656,14 @@ int main(int argc, char **argv)
 	check_crc32();
 	for (;;) {
 		int oi = 1;
-		char short_opts[] = "chqs:w:";
+		char short_opts[] = "chs:w:";
 		static const struct option long_opts[] = {
-			{"compress",	0, NULL, 'c'},
-			{"help",	0, NULL, 'h'},
-			{"quick",	0, NULL, 'q'},
-			{"segshift",	1, NULL, 's'},
-			{"writeshift",	1, NULL, 'w'},
+			{"compress",		0, NULL, 'c'},
+			{"help",		0, NULL, 'h'},
+			{"non-interactive",	0, NULL, 'n'},
+			{"demo-mode",		0, NULL, 'q'},
+			{"segshift",		1, NULL, 's'},
+			{"writeshift",		1, NULL, 'w'},
 			{ }
 		};
 		int c = getopt_long(argc, argv, short_opts, long_opts, &oi);
@@ -667,6 +679,9 @@ int main(int argc, char **argv)
 		case 'h':
 			usage();
 			exit(EXIT_SUCCESS);
+		case 'n':
+			interactice_mode = 0;
+			break;
 		case 'q':
 			quick_bad_block_scan = 1;
 			break;
