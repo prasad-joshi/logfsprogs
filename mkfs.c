@@ -2,6 +2,8 @@
  * LogFS mkfs
  *
  * Copyright (c) 2007 Joern Engel <joern@logfs.org>
+ *
+ * License: GPL version 2
  */
 
 #define __CHECK_ENDIAN__
