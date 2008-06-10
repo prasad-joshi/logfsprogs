@@ -1,5 +1,5 @@
-BIN	:= mklogfs
-SRC	:= mkfs.c
+BIN	:= mklogfs logfsck
+SRC	:= mkfs.c fsck.c
 OBJ	:= $(SRC:.c=.o)
 BB	:= $(SRC:.c=.bb)
 BBG	:= $(SRC:.c=.bbg)
@@ -16,10 +16,15 @@ CFLAGS	+= -Os
 all: $(BIN)
 
 
-$(BIN):	$(OBJ)
-	$(CC) $(CFLAGS) -lz -o $@ $^
+mklogfs: mkfs.o lib.o crc32.o deflate.o adler32.o compress.o trees.o zutil.o
+	$(CC) $(CFLAGS) -static -lz -o $@ $^
 
-mkfs.o: kerncompat.h
+logfsck: fsck.o lib.o crc32.o deflate.o adler32.o compress.o trees.o zutil.o
+	$(CC) $(CFLAGS) -static -lz -o $@ $^
+
+mkfs.o: kerncompat.h logfs.h
+fsck.o: kerncompat.h logfs.h
+lib.o: kerncompat.h logfs.h
 
 %.o: %.c
 	cgcc $(CFLAGS) -c -o $@ $<

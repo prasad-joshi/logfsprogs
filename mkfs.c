@@ -1,7 +1,7 @@
 /*
  * LogFS mkfs
  *
- * Copyright (c) 2007 Joern Engel <joern@logfs.org>
+ * Copyright (c) 2007-2008 Joern Engel <joern@logfs.org>
  *
  * License: GPL version 2
  */
@@ -28,6 +28,7 @@
 #include "kerncompat.h"
 #include <mtd/mtd-abi.h>
 #include "logfs_abi.h"
+#include "logfs.h"
 
 enum {
 	OFS_SB = 0,
@@ -105,12 +106,6 @@ error:
 }
 
 
-static inline __be32 logfs_crc32(void *data, size_t len, size_t skip)
-{
-	return cpu_to_be32(~crc32(0, data+skip, len-skip));
-}
-
-
 ////////////////////////////////////////////////////////////////////////////////
 
 
@@ -158,13 +153,6 @@ static const struct logfs_device_operations bdev_ops = {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-
-static void fail(const char *s) __attribute__ ((__noreturn__));
-static void fail(const char *s)
-{
-	printf("mklogfs: %s\n", s);
-	exit(EXIT_FAILURE);
-}
 
 /* root inode */
 
@@ -636,19 +624,6 @@ static void usage(void)
 "appropriate power is specified with the \"-s\" or \"-w\" options, instead\n"
 "of the actual size.  E.g. \"mklogfs -w8\" will set a writesize\n"
 "of 256 Bytes (2^8).\n\n");
-}
-
-/*
- * zlib crc32 differs from the kernel variant.  zlib negated both the initial
- * value and the result bitwise.  So for the kernel ~0 is a correct initial
- * value, for zlib 0 is.
- * Better check for such funnies instead of generating bad images.
- */
-static void check_crc32(void)
-{
-	u32 c=0;
-	if (logfs_crc32(&c, 4, 0) != cpu_to_be32(0xdebb20e3))
-		fail("crc32 returns bad results");
 }
 
 int main(int argc, char **argv)
