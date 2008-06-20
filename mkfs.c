@@ -485,7 +485,7 @@ static void mkfs(int fd, const struct logfs_device_operations *ops)
 	if (user_segshift + 1)
 		segshift = user_segshift;
 	if (user_blockshift + 1)
-		segshift = user_blockshift;
+		blockshift = user_blockshift;
 	if (user_writeshift + 1)
 		writeshift = user_writeshift;
 
