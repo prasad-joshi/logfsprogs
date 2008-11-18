@@ -37,13 +37,7 @@ enum {
 	OFS_COUNT
 };
 
-static u64 fssize;
 static u64 no_segs;
-
-static u32 segsize;
-static u32 erasesize;
-static u32 blocksize;
-static u32 writesize;
 
 static unsigned user_segshift = -1;
 static unsigned user_blockshift = -1;
@@ -53,8 +47,6 @@ static unsigned segshift = 17;
 static unsigned blockshift = 12;
 static unsigned writeshift = 0;
 
-static void *erase_buf;
-static void *wbuf;
 static u64 wbuf_ofs;
 
 static u64 segment_offset[OFS_COUNT];
@@ -63,6 +55,10 @@ static __be32 bb_array[1024];
 static int bb_count;
 
 static u16 version;
+
+/* journal entries */
+static __be64 je_array[64];
+static int no_je;
 
 /* commandline options */
 static int compress_rootdir;
@@ -109,45 +105,89 @@ error:
 ////////////////////////////////////////////////////////////////////////////////
 
 
-struct logfs_device_operations {
-	int (*write)(int fd, u64 ofs, size_t size, void *buf);
-	int (*erase)(int fd, u64 ofs, size_t size);
-};
-
-static int mtd_erase(int fd, u64 ofs, size_t size)
+static int mtd_erase(struct super_block *sb, u64 ofs, size_t size)
 {
 	struct erase_info_user ei;
 
 	ei.start = ofs;
 	ei.length = size;
 
-	return ioctl(fd, MEMERASE, &ei);
+	return ioctl(sb->fd, MEMERASE, &ei);
 }
 
-static int bdev_write(int fd, u64 ofs, size_t size, void *buf)
+/*
+ * The superblock doesn't have to be segment-aligned.  So simply search the
+ * first non-bad eraseblock, completely ignoring segment size.
+ */
+static s64 mtd_scan_super(struct super_block *sb)
+{
+	s64 ofs, sb_ofs;
+	int err;
+
+	for (ofs = 0; ofs < sb->fssize; ofs += sb->erasesize) {
+		printf("\r%lld%% done. ", 100*ofs / sb->fssize);
+		err = mtd_erase(sb, ofs, sb->erasesize);
+		if (err) {
+			printf("Bad block at 0x%llx\n", ofs);
+			if ((ofs & (sb->segsize-1)) == 0) {
+				/* bad segment */
+				if (bb_count > 512)
+					return -EIO;
+				bb_array[bb_count++] = cpu_to_be32(ofs >> segshift);
+			}
+		} else {
+			if (ofs)
+				printf("Superblock is at %llx\n", ofs);
+			/* first non-bad block */
+			sb_ofs = ofs;
+			/* erase remaining blocks in segment */
+			for (; ofs & (sb->segsize-1); ofs+=sb->erasesize)
+				mtd_erase(sb, ofs, sb->erasesize);
+			return sb_ofs;
+		}
+	}
+	/* all bad */
+	return -EIO;
+}
+
+static int bdev_write(struct super_block *sb, u64 ofs, size_t size, void *buf)
 {
 	ssize_t ret;
 
-	lseek64(fd, ofs, SEEK_SET);
-	ret = write(fd, buf, size);
+	lseek64(sb->fd, ofs, SEEK_SET);
+	ret = write(sb->fd, buf, size);
 	if (ret != size)
 		return -EIO;
 	return 0;
 }
 
-static int bdev_erase(int fd, u64 ofs, size_t size)
+static int bdev_erase(struct super_block *sb, u64 ofs, size_t size)
 {
-	return bdev_write(fd, ofs, size, erase_buf);
+	if (!sb->erase_buf) {
+		sb->erase_buf = malloc(sb->segsize);
+		if (!sb->erase_buf)
+			fail("out of memory");
+		memset(sb->erase_buf, 0xff, sb->segsize);
+	}
+
+	return bdev_write(sb, ofs, size, sb->erase_buf);
+}
+
+static s64 bdev_scan_super(struct super_block *sb)
+{
+	return bdev_erase(sb, 0, sb->segsize);
 }
 
 static const struct logfs_device_operations mtd_ops = {
 	.write = bdev_write,
 	.erase = mtd_erase,
+	.scan_super = mtd_scan_super,
 };
 
 static const struct logfs_device_operations bdev_ops = {
 	.write = bdev_write,
 	.erase = bdev_erase,
+	.scan_super = bdev_scan_super,
 };
 
 
@@ -156,14 +196,13 @@ static const struct logfs_device_operations bdev_ops = {
 
 /* root inode */
 
-static int buf_write(int fd, const struct logfs_device_operations *ops,
-		u64 ofs, void *data, size_t len)
+static int buf_write(struct super_block *sb, u64 ofs, void *data, size_t len)
 {
-	size_t space = len & ~(writesize - 1);
+	size_t space = len & ~(sb->writesize - 1);
 	int err;
 
 	if (space) {
-		err = ops->write(fd, ofs, space, data);
+		err = sb->dev_ops->write(sb, ofs, space, data);
 		if (err)
 			return err;
 		ofs += space;
@@ -172,17 +211,29 @@ static int buf_write(int fd, const struct logfs_device_operations *ops,
 	}
 
 	if (len)
-		memcpy(wbuf, data, len);
+		memcpy(sb->wbuf, data, len);
 	wbuf_ofs = ofs + len;
 	return 0;
 }
 
-static int make_rootdir(int fd, const struct logfs_device_operations *ops)
+static void set_segment_header(struct logfs_segment_header *sh, u8 type,
+		u8 level, u32 segno)
+{
+	sh->pad = 0;
+	sh->type = type;
+	sh->level = level;
+	sh->segno = cpu_to_be32(segno);
+	sh->ec = 0;
+	sh->gec = cpu_to_be64(1);
+	sh->crc = logfs_crc32(sh, LOGFS_SEGMENT_HEADERSIZE, 4);
+}
+
+static int make_rootdir(struct super_block *sb)
 {
 	struct logfs_segment_header *sh;
 	struct logfs_object_header *oh;
 	struct logfs_disk_inode *di;
-	size_t size = blocksize + LOGFS_HEADERSIZE + LOGFS_SEGMENT_HEADERSIZE;
+	size_t size = sb->blocksize + LOGFS_OBJECT_HEADERSIZE + LOGFS_SEGMENT_HEADERSIZE;
 	int ret;
 
 	sh = calloc(size, 1);
@@ -192,96 +243,90 @@ static int make_rootdir(int fd, const struct logfs_device_operations *ops)
 	oh = (void*)(sh+1);
 	di = (void*)(oh+1);
 
-	sh->pad = 0;
-	sh->type = OBJ_OSTORE;
-	sh->level = LOGFS_MAX_LEVELS;
-	sh->segno = cpu_to_be32(segment_offset[OFS_ROOTDIR] >> segshift);
-	sh->ec = 0;
-	sh->gec = 0;
-	sh->crc = logfs_crc32(sh, LOGFS_SEGMENT_HEADERSIZE, 4);
+	set_segment_header(sh, SEG_OSTORE, LOGFS_MAX_LEVELS,
+			segment_offset[OFS_ROOTDIR] >> segshift);
 
-	di->di_flags	= cpu_to_be32(LOGFS_IF_VALID);
+	di->di_flags	= 0;
 	if (compress_rootdir)
 		di->di_flags |= cpu_to_be32(LOGFS_IF_COMPRESSED);
 	di->di_mode	= cpu_to_be16(S_IFDIR | 0755);
 	di->di_refcount	= cpu_to_be32(2);
 
-	oh->len = cpu_to_be16(blocksize);
+	oh->len = cpu_to_be16(sb->blocksize);
 	oh->type = OBJ_BLOCK;
 	oh->compr = COMPR_NONE;
 	oh->ino = cpu_to_be64(LOGFS_INO_MASTER);
 	oh->bix = cpu_to_be64(LOGFS_INO_ROOT);
-	oh->crc = logfs_crc32(oh, LOGFS_HEADERSIZE - 4, 4);
-	oh->data_crc = logfs_crc32(di, blocksize, 0);
+	oh->crc = logfs_crc32(oh, LOGFS_OBJECT_HEADERSIZE - 4, 4);
+	oh->data_crc = logfs_crc32(di, sb->blocksize, 0);
 
-	ret = buf_write(fd, ops, segment_offset[OFS_ROOTDIR], sh, size);
+	ret = buf_write(sb, segment_offset[OFS_ROOTDIR], sh, size);
 	free(sh);
 	return ret;
 }
 
 /* journal */
 
-static size_t __write_header(struct logfs_journal_header *h, size_t len,
+static size_t __write_header(struct logfs_journal_header *jh, size_t len,
 		size_t datalen, u16 type, u8 compr)
 {
-	h->h_len	= cpu_to_be16(len);
-	h->h_type	= cpu_to_be16(type);
-	h->h_version	= cpu_to_be16(++version);
-	h->h_datalen	= cpu_to_be16(datalen);
-	h->h_compr	= compr;
-	h->h_pad[0]	= 'h';
-	h->h_pad[1]	= 'a';
-	h->h_pad[2]	= 't';
-	h->h_crc	= logfs_crc32(h, len, 4);
-	return len;
+	jh->h_len	= cpu_to_be16(len);
+	jh->h_type	= cpu_to_be16(type);
+	jh->h_version	= cpu_to_be16(++version);
+	jh->h_datalen	= cpu_to_be16(datalen);
+	jh->h_compr	= compr;
+	jh->h_pad[0]	= 'h';
+	jh->h_pad[1]	= 'a';
+	jh->h_pad[2]	= 't';
+	jh->h_crc	= logfs_crc32(jh, len + sizeof(*jh), 4);
+	return ALIGN(len, 16) + sizeof(*jh);
 }
 
 static size_t write_header(struct logfs_journal_header *h, size_t datalen,
 		u16 type)
 {
-	size_t len = datalen + sizeof(*h);
-	return __write_header(h, len, datalen, type, COMPR_NONE);
+	return __write_header(h, datalen, datalen, type, COMPR_NONE);
 }
 
-static size_t je_wbuf(void *data, u16 *type)
+static size_t je_wbuf(struct super_block *sb, void *data, u16 *type)
 {
-	memcpy(data, wbuf, writesize);
+	memcpy(data, sb->wbuf, sb->writesize);
 	*type = JEG_WBUF + LOGFS_MAX_LEVELS; /* inode level */
-	return writesize;
+	return sb->writesize;
 }
 
-static size_t je_badsegments(void *data, u16 *type)
+static size_t je_badsegments(struct super_block *sb, void *data, u16 *type)
 {
-	memcpy(data, bb_array, blocksize);
+	memcpy(data, bb_array, sb->blocksize);
 	*type = JE_BADSEGMENTS;
-	return blocksize;
+	return sb->blocksize;
 }
 
-static size_t je_anchor(void *_da, u16 *type)
+static size_t je_anchor(struct super_block *sb, void *_da, u16 *type)
 {
 	struct logfs_je_anchor *da = _da;
 
 	memset(da, 0, sizeof(*da));
 	da->da_last_ino	= cpu_to_be64(LOGFS_RESERVED_INOS);
-	da->da_size	= cpu_to_be64((LOGFS_INO_ROOT+1) * blocksize);
-	da->da_used_bytes = cpu_to_be64(blocksize + LOGFS_HEADERSIZE);
+	da->da_size	= cpu_to_be64((LOGFS_INO_ROOT+1) * sb->blocksize);
+	da->da_used_bytes = cpu_to_be64(sb->blocksize + LOGFS_OBJECT_HEADERSIZE);
 	da->da_data[LOGFS_INO_ROOT] = cpu_to_be64(segment_offset[OFS_ROOTDIR]
 				+ LOGFS_SEGMENT_HEADERSIZE);
 	*type = JE_ANCHOR;
 	return sizeof(*da);
 }
 
-static size_t je_dynsb(void *_dynsb, u16 *type)
+static size_t je_dynsb(struct super_block *sb, void *_dynsb, u16 *type)
 {
 	struct logfs_je_dynsb *dynsb = _dynsb;
 
 	memset(dynsb, 0, sizeof(*dynsb));
-	dynsb->ds_used_bytes	= cpu_to_be64(blocksize + LOGFS_HEADERSIZE);
+	dynsb->ds_used_bytes	= cpu_to_be64(sb->blocksize + LOGFS_OBJECT_HEADERSIZE);
 	*type = JE_DYNSB;
 	return sizeof(*dynsb);
 }
 
-static size_t je_areas(void *_a, u16 *type)
+static size_t je_areas(struct super_block *sb, void *_a, u16 *type)
 {
 	struct logfs_je_areas *a = _a;
 	int l = LOGFS_MAX_LEVELS;
@@ -293,30 +338,36 @@ static size_t je_areas(void *_a, u16 *type)
 	return sizeof(*a);
 }
 
-static size_t je_commit(void *h, u16 *type)
+static size_t je_commit(struct super_block *sb, void *h, u16 *type)
 {
 	*type = JE_COMMIT;
-	return 0;
+	memcpy(h, je_array, no_je * sizeof(__be64));
+	return no_je * sizeof(__be64);
 }
 
-static size_t write_je(size_t jpos, void *scratch, void *header,
-		size_t (*write)(void *scratch, u16 *type))
+static size_t write_je(struct super_block *sb,
+		size_t jpos, void *scratch, void *header,
+		size_t (*write)(struct super_block *sb, void *scratch,
+			u16 *type))
 {
 	void *data;
-	ssize_t len, max, compr_len, pad_len, full_len;
+	ssize_t len, max, compr_len, pad_len;
 	u16 type;
 	u8 compr = COMPR_ZLIB;
 
+	/* carefule: segment_offset[OFS_JOURNAL] must match make_journal() */
 	header += jpos;
 	data = header + sizeof(struct logfs_journal_header);
 
-	len = write(scratch, &type);
+	len = write(sb, scratch, &type);
+	if (type != JE_COMMIT)
+		je_array[no_je++] = cpu_to_be64(segment_offset[OFS_JOURNAL] + jpos);
 	if (len == 0)
 		return write_header(header, 0, type);
 
-	max = blocksize - jpos;
+	max = sb->blocksize - jpos;
 	compr_len = logfs_compress(scratch, data, len, max);
-	if ((compr_len < 0) || (type == JE_ANCHOR)) {
+	if ((compr_len < 0) || (type == JE_COMMIT)) {
 		BUG_ON(len > max);
 		memcpy(data, scratch, len);
 		compr_len = len;
@@ -325,45 +376,46 @@ static size_t write_je(size_t jpos, void *scratch, void *header,
 
 	pad_len = ALIGN(compr_len, 16);
 	memset(data + compr_len, 0, pad_len - compr_len);
-	full_len = pad_len + sizeof(struct logfs_journal_header);
 
-	return __write_header(header, full_len, len, type, compr);
+	return __write_header(header, compr_len, len, type, compr);
 }
 
-static int make_journal(int fd, const struct logfs_device_operations *ops)
+static int make_journal(struct super_block *sb)
 {
 	void *journal, *scratch;
 	size_t jpos;
 	int ret;
 
-	journal = calloc(2*blocksize, 1);
+	journal = calloc(2*sb->blocksize, 1);
 	if (!journal)
 		return -ENOMEM;
 
-	scratch = journal + blocksize;
+	scratch = journal + sb->blocksize;
 
-	jpos = 0;
+	set_segment_header(journal, SEG_JOURNAL, 0,
+			segment_offset[OFS_JOURNAL] >> segshift);
+	jpos = ALIGN(sizeof(struct logfs_segment_header), 16);
 	/* erasecount is not written - implicitly set to 0 */
 	/* neither are summary, index, wbuf */
-	if (writesize > 1)
-		jpos += write_je(jpos, scratch, journal, je_wbuf);
-	jpos += write_je(jpos, scratch, journal, je_badsegments);
-	jpos += write_je(jpos, scratch, journal, je_anchor);
-	jpos += write_je(jpos, scratch, journal, je_dynsb);
-	jpos += write_je(jpos, scratch, journal, je_areas);
-	jpos += write_je(jpos, scratch, journal, je_commit);
-	ret = ops->write(fd, segment_offset[OFS_JOURNAL], blocksize, journal);
+	if (sb->writesize > 1)
+		jpos += write_je(sb, jpos, scratch, journal, je_wbuf);
+	jpos += write_je(sb, jpos, scratch, journal, je_badsegments);
+	jpos += write_je(sb, jpos, scratch, journal, je_anchor);
+	jpos += write_je(sb, jpos, scratch, journal, je_dynsb);
+	jpos += write_je(sb, jpos, scratch, journal, je_areas);
+	jpos += write_je(sb, jpos, scratch, journal, je_commit);
+	ret = sb->dev_ops->write(sb, segment_offset[OFS_JOURNAL], sb->blocksize, journal);
 	free(journal);
 	return ret;
 }
 
 /* superblock */
 
-static int make_super(int fd, const struct logfs_device_operations *ops)
+static int make_super(struct super_block *sb)
 {
 	struct logfs_disk_super _ds, *ds = &_ds;
 	void *sector;
-	int secsize = ALIGN(sizeof(*ds), writesize);
+	int secsize = ALIGN(sizeof(*ds), sb->writesize);
 	int ret;
 
 	sector = calloc(secsize, 1);
@@ -371,6 +423,7 @@ static int make_super(int fd, const struct logfs_device_operations *ops)
 		return -ENOMEM;
 
 	memset(ds, 0, sizeof(*ds));
+	set_segment_header((void *)ds, SEG_SUPER, 0, 0);
 
 	ds->ds_magic		= cpu_to_be64(LOGFS_MAGIC);
 	ds->ds_ifile_levels	= 3; /* 2+1, 1GiB */
@@ -383,7 +436,7 @@ static int make_super(int fd, const struct logfs_device_operations *ops)
 	ds->ds_feature_compat	= 0;
 	ds->ds_flags		= 0;
 
-	ds->ds_filesystem_size	= cpu_to_be64(fssize);
+	ds->ds_filesystem_size	= cpu_to_be64(sb->fssize);
 	ds->ds_segment_shift	= segshift;
 	ds->ds_block_shift	= blockshift;
 	ds->ds_write_shift	= writeshift;
@@ -395,71 +448,31 @@ static int make_super(int fd, const struct logfs_device_operations *ops)
 
 	ds->ds_root_reserve	= 0;
 
-	ds->ds_crc = logfs_crc32(ds, sizeof(*ds), 12);
+	ds->ds_crc = logfs_crc32(ds, sizeof(*ds), LOGFS_SEGMENT_HEADERSIZE + 12);
 
 	memcpy(sector, ds, sizeof(*ds));
-	ret = ops->write(fd, segment_offset[OFS_SB], secsize, sector);
+	ret = sb->dev_ops->write(sb, segment_offset[OFS_SB], secsize, sector);
 	free(sector);
 	return ret;
 }
 
 /* main stuff */
 
-/*
- * The superblock doesn't have to be segment-aligned.  So simply search the
- * first non-bad eraseblock, completely ignoring segment size.
- */
-static s64 superblock_scan(int fd, const struct logfs_device_operations *ops)
-{
-	s64 ofs, sb_ofs;
-	int err;
-
-	if (ops != &mtd_ops) {
-		sb_ofs = 0;
-		return 0;
-	}
-
-	for (ofs=0; ofs<fssize; ofs+=erasesize) {
-		printf("\r%lld%% done. ", 100*ofs / fssize);
-		err = ops->erase(fd, ofs, erasesize);
-		if (err) {
-			printf("Bad block at 0x%llx\n", ofs);
-			if ((ofs & (segsize-1)) == 0) {
-				/* bad segment */
-				if (bb_count > 512)
-					return -EIO;
-				bb_array[bb_count++] = cpu_to_be32(ofs >> segshift);
-			}
-		} else {
-			if (ofs)
-				printf("Superblock is at %llx\n", ofs);
-			/* first non-bad block */
-			sb_ofs = ofs;
-			/* erase remaining blocks in segment */
-			for (; ofs & (segsize-1); ofs+=erasesize)
-				ops->erase(fd, ofs, erasesize);
-			return sb_ofs;
-		}
-	}
-	/* all bad */
-	return -EIO;
-}
-
-static int bad_block_scan(int fd, const struct logfs_device_operations *ops)
+static int bad_block_scan(struct super_block *sb)
 {
 	int seg, err;
 	s64 ofs, sb_ofs;
 
 	seg = 0;
 	bb_count = 0;
-	sb_ofs = superblock_scan(fd, ops);
+	sb_ofs = sb->dev_ops->scan_super(sb);
 	if (sb_ofs < 0)
 		return -EIO;
 
 	segment_offset[seg++] = sb_ofs;
-	for (ofs=ALIGN(sb_ofs+1, segsize); ofs<fssize; ofs+=segsize) {
-		printf("\r%lld%% done. ", 100*ofs / fssize);
-		err = ops->erase(fd, ofs, segsize);
+	for (ofs = ALIGN(sb_ofs+1, sb->segsize); ofs < sb->fssize; ofs += sb->segsize) {
+		printf("\r%lld%% done. ", 100*ofs / sb->fssize);
+		err = sb->dev_ops->erase(sb, ofs, sb->segsize);
 		if (err) {
 			/* bad segment */
 			if (bb_count > 512)
@@ -477,7 +490,7 @@ static int bad_block_scan(int fd, const struct logfs_device_operations *ops)
 	return 0;
 }
 
-static void mkfs(int fd, const struct logfs_device_operations *ops)
+static void mkfs(struct super_block *sb)
 {
 	char answer[4096]; /* I don't care about overflows */
 	int ret;
@@ -497,19 +510,19 @@ static void mkfs(int fd, const struct logfs_device_operations *ops)
 		fail("blockshift must be 12");
 	if (writeshift >= 12)
 		fail("writeshift too large (max 12)");
-	segsize = 1 << segshift;
-	blocksize = 1 << blockshift;
-	writesize = 1 << writeshift;
+	sb->segsize = 1 << segshift;
+	sb->blocksize = 1 << blockshift;
+	sb->writesize = 1 << writeshift;
 
-	no_segs = fssize >> segshift;
-	fssize = no_segs << segshift;
+	no_segs = sb->fssize >> segshift;
+	sb->fssize = no_segs << segshift;
 
 	printf("Will create filesystem with the following details:\n");
 	printf("              hex:   decimal:\n");
-	printf("fssize=   %8llx %10lld\n", fssize, fssize);
-	printf("segsize=  %8x %10d\n", segsize, segsize);
-	printf("blocksize=%8x %10d\n", blocksize, blocksize);
-	printf("writesize=%8x %10d\n", writesize, writesize);
+	printf("fssize=   %8llx %10lld\n", sb->fssize, sb->fssize);
+	printf("segsize=  %8x %10d\n", sb->segsize, sb->segsize);
+	printf("blocksize=%8x %10d\n", sb->blocksize, sb->blocksize);
+	printf("writesize=%8x %10d\n", sb->writesize, sb->writesize);
 	printf("\n");
 
 	if (interactice_mode) {
@@ -525,47 +538,40 @@ static void mkfs(int fd, const struct logfs_device_operations *ops)
 			fail("aborting...");
 	}
 
-	wbuf = malloc(writesize);
-	if (!wbuf)
-		fail("out of memory");
-
-	erase_buf = malloc(segsize);
-	if (!erase_buf)
-		fail("out of memory");
-	memset(erase_buf, 0xff, segsize);
-
-	ret = bad_block_scan(fd, ops);
+	ret = bad_block_scan(sb);
 	if (ret)
 		fail("bad block scan failed");
 
-	ret = make_rootdir(fd, ops);
+	ret = make_rootdir(sb);
 	if (ret)
 		fail("could not create root inode");
 
-	ret = make_journal(fd, ops);
+	ret = make_journal(sb);
 	if (ret)
 		fail("could not create journal");
 
-	ret = make_super(fd, ops);
+	ret = make_super(sb);
 	if (ret)
 		fail("could not create superblock");
 
-	fsync(fd);
+	fsync(sb->fd);
 	printf("\nFinished generating LogFS\n");
 }
 
-static void open_device(const char *name)
+static struct super_block *__open_device(const char *name)
 {
+	struct super_block *sb;
 	const struct logfs_device_operations *ops = &bdev_ops;
 	struct mtd_info_user mtd;
 	struct stat stat;
-	int fd, err;
+	int err;
 
-	fd = open(name, O_WRONLY);
-	if (fd == -1)
+	sb = zalloc(sizeof(*sb));
+	sb->fd = open(name, O_WRONLY);
+	if (sb->fd == -1)
 		fail("could not open device");
 
-	err = fstat(fd, &stat);
+	err = fstat(sb->fd, &stat);
 	if (err)
 		fail("could not stat device");
 
@@ -579,11 +585,11 @@ static void open_device(const char *name)
 		if (major(stat.st_rdev) != 90)
 			fail("non-mtd character device");
 		ops = &mtd_ops;
-		err = ioctl(fd, MEMGETINFO, &mtd);
+		err = ioctl(sb->fd, MEMGETINFO, &mtd);
 		if (err)
 			fail("mtd ioctl failed");
 
-		erasesize = mtd.erasesize;
+		sb->erasesize = mtd.erasesize;
 		segshift = ffs(mtd.erasesize) - 1;
 		if (mtd.erasesize != 1 << segshift)
 			fail("device erasesize must be a power of 2");
@@ -592,19 +598,24 @@ static void open_device(const char *name)
 		if (mtd.writesize != 1 << writeshift)
 			fail("device writesize must be a power of 2");
 
-		fssize = mtd.size;
+		sb->fssize = mtd.size;
 		break;
 	case S_IFREG:
-		fssize = stat.st_size;
+		sb->fssize = stat.st_size;
 		break;
 	case S_IFBLK:
-		err = ioctl(fd, BLKGETSIZE64, &fssize);
+		err = ioctl(sb->fd, BLKGETSIZE64, &sb->fssize);
 		if (err)
 			fail("block ioctl failed");
 		break;
 	}
 
-	mkfs(fd, ops);
+	sb->wbuf = malloc(sb->writesize);
+	if (!sb->wbuf)
+		fail("out of memory");
+
+	sb->dev_ops = ops;
+	return sb;
 }
 
 static void usage(void)
@@ -628,6 +639,8 @@ static void usage(void)
 
 int main(int argc, char **argv)
 {
+	struct super_block *sb;
+
 	check_crc32();
 	for (;;) {
 		int oi = 1;
@@ -676,7 +689,8 @@ int main(int argc, char **argv)
 		exit(EXIT_FAILURE);
 	}
 
-	open_device(argv[optind]);
+	sb = __open_device(argv[optind]);
+	mkfs(sb);
 
 	return 0;
 }
