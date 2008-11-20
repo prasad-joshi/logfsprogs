@@ -1,5 +1,8 @@
+#
+# Use "make C=1 foo" to enable sparse checking
+#
 BIN	:= mklogfs logfsck
-SRC	:= mkfs.c fsck.c
+SRC	:= mkfs.c fsck.c lib.c journal.c
 OBJ	:= $(SRC:.c=.o)
 BB	:= $(SRC:.c=.bb)
 BBG	:= $(SRC:.c=.bbg)
@@ -8,6 +11,7 @@ COV	:= $(SRC:.c=.c.gcov)
 ZLIB_O	:= crc32.o deflate.o adler32.o compress.o trees.o zutil.o
 
 CC	:= gcc
+CHECK	:= cgcc
 CFLAGS	:= -std=gnu99
 CFLAGS	+= -Wall
 CFLAGS	+= -Os
@@ -33,7 +37,9 @@ mkfs.o: kerncompat.h logfs.h
 super.o: kerncompat.h logfs.h
 
 %.o: %.c
-	cgcc $(CFLAGS) -c -o $@ $<
+ifdef C
+	$(CHECK) $(CFLAGS) -c -o $@ $<
+endif
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 
