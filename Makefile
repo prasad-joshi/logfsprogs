@@ -12,6 +12,7 @@ ZLIB_O	:= crc32.o deflate.o adler32.o compress.o trees.o zutil.o
 
 CC	:= gcc
 CHECK	:= cgcc
+CHECKFLAGS := -D__CHECK_ENDIAN__
 CFLAGS	:= -std=gnu99
 CFLAGS	+= -Wall
 CFLAGS	+= -Os
@@ -38,7 +39,7 @@ super.o: kerncompat.h logfs.h
 
 %.o: %.c
 ifdef C
-	$(CHECK) $(CFLAGS) -c -o $@ $<
+	$(CHECK) $(CFLAGS) $(CHECKFLAGS) -c -o $@ $<
 endif
 	$(CC) $(CFLAGS) -c -o $@ $<
 
