@@ -135,7 +135,6 @@ static inline int test_bit(int nr, const volatile unsigned long *addr)
 	        (type *)( (char *)__mptr - offsetof(type,member) );})
 
 #ifdef __CHECKER__
-#define __CHECK_ENDIAN__
 #define __bitwise __bitwise__
 #else
 #undef __bitwise
@@ -157,18 +156,18 @@ typedef u64 __bitwise __be64;
 #define cpu_to_be16(x) ((__force __be16)(u16)(x))
 #define be16_to_cpu(x) ((__force u16)(__be16)(x))
 #define cpu_to_le64(x) ((__force __le64)(u64)(bswap_64(x)))
-#define le64_to_cpu(x) ((__force u64)(__le64)(bswap_64(x)))
+#define le64_to_cpu(x) (bswap_64((__force u64)(__le64)(x)))
 #define cpu_to_le32(x) ((__force __le32)(u32)(bswap_32(x)))
-#define le32_to_cpu(x) ((__force u32)(__le32)(bswap_32(x)))
+#define le32_to_cpu(x) (bswap_32((__force u32)(__le32)(x)))
 #define cpu_to_le16(x) ((__force __le16)(u16)(bswap_16(x)))
-#define le16_to_cpu(x) ((__force u16)(__le16)(bswap_16(x)))
+#define le16_to_cpu(x) (bswap_16((__force u16)(__le16)(x)))
 #else
 #define cpu_to_be64(x) ((__force __be64)(u64)(bswap_64(x)))
-#define be64_to_cpu(x) ((__force u64)(__be64)(bswap_64(x)))
+#define be64_to_cpu(x) (bswap_64((__force u64)(__be64)(x)))
 #define cpu_to_be32(x) ((__force __be32)(u32)(bswap_32(x)))
-#define be32_to_cpu(x) ((__force u32)(__be32)(bswap_32(x)))
+#define be32_to_cpu(x) (bswap_32((__force u32)(__be32)(x)))
 #define cpu_to_be16(x) ((__force __be16)(u16)(bswap_16(x)))
-#define be16_to_cpu(x) ((__force u16)(__be16)(bswap_16(x)))
+#define be16_to_cpu(x) (bswap_16((__force u16)(__be16)(x)))
 #define cpu_to_le64(x) ((__force __le64)(u64)(x))
 #define le64_to_cpu(x) ((__force u64)(__le64)(x))
 #define cpu_to_le32(x) ((__force __le32)(u32)(x))
