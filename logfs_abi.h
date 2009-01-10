@@ -155,7 +155,7 @@ static inline void check_##type(void)				\
 #define LOGFS_MAX_NAMELEN	(255)
 
 /* Number of segments in the primary journal. */
-#define LOGFS_JOURNAL_SEGS	(8)
+#define LOGFS_JOURNAL_SEGS	(16)
 
 /* Maximum number of free/erased/etc. segments in journal entries */
 #define MAX_CACHED_SEGS		(64)
@@ -263,7 +263,7 @@ struct logfs_disk_super {
 	__be64	ds_root_reserve;
 	__be64  ds_speed_reserve;
 
-	__be64	ds_journal_seg[LOGFS_JOURNAL_SEGS];
+	__be32	ds_journal_seg[LOGFS_JOURNAL_SEGS];
 
 	__be64	pad3[10];
 };
@@ -309,12 +309,12 @@ SIZE_CHECK(logfs_object_header, LOGFS_OBJECT_HEADERSIZE);
  * Reserved inode numbers:
  * LOGFS_INO_MASTER	- master inode (for inode file)
  * LOGFS_INO_ROOT	- root directory
- * LOGFS_INO_USE_EC	- per-segment used bytes and erase count
+ * LOGFS_INO_SEGFILE	- per-segment used bytes and erase count
  */
 enum {
 	LOGFS_INO_MASTER	= 0x01,
 	LOGFS_INO_ROOT		= 0x02,
-	LOGFS_INO_USE_EC	= 0x03,
+	LOGFS_INO_SEGFILE	= 0x03,
 	LOGFS_RESERVED_INOS	= 0x10,
 };
 
@@ -324,13 +324,10 @@ enum {
  * Low bits should either remain in sync with the corresponding FS_*_FL or
  * reuse slots that obviously don't make sense for logfs.
  *
- * LOGFS_IF_EMBEDDED	Inode is a fast inode (data embedded in pointers)
- *
  * LOGFS_IF_DIRTY	Inode must be written back
  * LOGFS_IF_ZOMBIE	Inode has been deleted
  * LOGFS_IF_STILLBORN	-ENOSPC happened when creating inode
  */
-#define LOGFS_IF_EMBEDDED	0x00000001
 #define LOGFS_IF_COMPRESSED	0x00000004 /* == FS_COMPR_FL */
 #define LOGFS_IF_DIRTY		0x20000000
 #define LOGFS_IF_ZOMBIE		0x40000000
@@ -381,6 +378,13 @@ struct logfs_disk_inode {
 
 SIZE_CHECK(logfs_disk_inode, 264);
 
+#define INODE_POINTER_OFS \
+	(offsetof(struct logfs_disk_inode, di_data) / sizeof(__be64))
+#define INODE_USED_OFS \
+	(offsetof(struct logfs_disk_inode, di_used_bytes) / sizeof(__be64))
+#define INODE_SIZE_OFS \
+	(offsetof(struct logfs_disk_inode, di_size) / sizeof(__be64))
+
 /**
  * struct logfs_disk_dentry - on-medium dentry structure
  *
@@ -398,6 +402,27 @@ struct logfs_disk_dentry {
 } __attribute__((packed));
 
 SIZE_CHECK(logfs_disk_dentry, 266);
+
+#define RESERVED		0xffffffff
+#define BADSEG			0xffffffff
+/**
+ * struct logfs_segment_entry - segment file entry
+ *
+ * @ec_level:			erase count and level
+ * @valid:			number of valid bytes
+ *
+ * Segment file contains one entry for every segment.  ec_level contains the
+ * erasecount in the upper 28 bits and the level in the lower 4 bits.  An
+ * ec_level of BADSEG (-1) identifies bad segments.  valid contains the number
+ * of valid bytes or RESERVED (-1 again) if the segment is used for either the
+ * superblock or the journal, or when the segment is bad.
+ */
+struct logfs_segment_entry {
+	__be32	ec_level;
+	__be32	valid;
+};
+
+SIZE_CHECK(logfs_segment_entry, 8);
 
 /**
  * struct logfs_journal_header - header for journal entries (JEs)
@@ -511,14 +536,18 @@ struct logfs_seg_alias {
 SIZE_CHECK(logfs_seg_alias, 8);
 
 /**
- * struct logfs_iused_alias - list of inode used bytes aliases
+ * struct logfs_obj_alias - list of object aliases
  */
-struct logfs_iused_alias {
+struct logfs_obj_alias {
 	__be64	ino;
-	__be64	used_bytes;
+	__be64	bix;
+	__be64	val;
+	u8	level;
+	u8	pad[5];
+	__be16	child_no;
 };
 
-SIZE_CHECK(logfs_iused_alias, 16);
+SIZE_CHECK(logfs_obj_alias, 32);
 
 /**
  * struct logfs_je_areas - management information for current areas
@@ -561,7 +590,6 @@ enum {
  * JE_ANCHOR	- anchor aka master inode aka inode file's inode
  * JE_ERASECOUNT  erasecounts for all journal segments
  * JE_SPILLOUT	- unused
- * JE_BADSEGMENTS bad segments
  * JE_AREAS	- area description sans wbuf
  * JE_FREESEGS	- free segments that can get deleted immediatly
  * JE_SEG_ALIAS	- aliases segments
@@ -577,16 +605,14 @@ enum {
 	JE_COMMIT	= 0x02,
 	JE_DYNSB	= 0x03,
 	JE_ANCHOR	= 0x04,
-	JE_ERASECOUNT	= 0x05,
+	JE_ERASECOUNT	= 0x05,	/* move to segment file */
 	JE_SPILLOUT	= 0x06,
-	JE_BADSEGMENTS	= 0x08,
 	JE_AREAS	= 0x09,
-	JE_FREESEGS	= 0x0a,
+	JE_FREESEGS	= 0x0a,	/* move to segment file */
 	JE_SEG_ALIAS	= 0x0b,
-	JE_IUSED_ALIAS	= 0x0c,
+	JE_OBJ_ALIAS	= 0x0d,
 
 	JEG_WBUF	= 0x10,
-	JEG_OBJ_ALIAS	= 0x20,
 
 	JE_LAST		= 0x2f,
 };

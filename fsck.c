@@ -6,7 +6,6 @@
  * License: GPL version 2
  */
 
-#define __CHECK_ENDIAN__
 #define _LARGEFILE64_SOURCE
 #define __USE_FILE_OFFSET64
 #include <asm/types.h>

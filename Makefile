@@ -1,8 +1,8 @@
 #
 # Use "make C=1 foo" to enable sparse checking
 #
-BIN	:= mklogfs logfsck
-SRC	:= mkfs.c fsck.c lib.c journal.c
+BIN	:= mklogfs
+SRC	:= mkfs.c fsck.c lib.c journal.c segment.c btree.c readwrite.c
 OBJ	:= $(SRC:.c=.o)
 BB	:= $(SRC:.c=.bb)
 BBG	:= $(SRC:.c=.bbg)
@@ -25,17 +25,14 @@ $(ZLIB_O): /usr/lib/libz.a
 	ar -x /usr/lib/libz.a $@
 
 mklogfs: $(ZLIB_O)
-mklogfs: mkfs.o lib.o
+mklogfs: mkfs.o lib.o btree.o segment.o readwrite.o
 	$(CC) $(CFLAGS) -static -lz -o $@ $^
 
 logfsck: $(ZLIB_O)
 logfsck: fsck.o lib.o journal.o super.o
 	$(CC) $(CFLAGS) -static -lz -o $@ $^
 
-fsck.o: kerncompat.h logfs.h
-lib.o: kerncompat.h logfs.h
-mkfs.o: kerncompat.h logfs.h
-super.o: kerncompat.h logfs.h
+$(OBJ): kerncompat.h logfs.h logfs_abi.h btree.h
 
 %.o: %.c
 ifdef C

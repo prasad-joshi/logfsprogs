@@ -5,8 +5,6 @@
  *
  * License: GPL version 2
  */
-
-#define __CHECK_ENDIAN__
 #define _LARGEFILE64_SOURCE
 #define __USE_FILE_OFFSET64
 #include <asm/types.h>
@@ -22,6 +20,7 @@
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#define __USE_UNIX98
 #include <unistd.h>
 #include <zlib.h>
 
@@ -37,8 +36,6 @@ enum {
 	OFS_COUNT
 };
 
-static u64 no_segs;
-
 static unsigned user_segshift = -1;
 static unsigned user_blockshift = -1;
 static unsigned user_writeshift = -1;
@@ -46,13 +43,7 @@ static unsigned user_writeshift = -1;
 static unsigned segshift = 17;
 static unsigned blockshift = 12;
 static unsigned writeshift = 0;
-
-static u64 wbuf_ofs;
-
-static u64 segment_offset[OFS_COUNT];
-
-static __be32 bb_array[1024];
-static int bb_count;
+static unsigned no_journal_segs = 4;
 
 static u16 version;
 
@@ -115,47 +106,11 @@ static int mtd_erase(struct super_block *sb, u64 ofs, size_t size)
 	return ioctl(sb->fd, MEMERASE, &ei);
 }
 
-/*
- * The superblock doesn't have to be segment-aligned.  So simply search the
- * first non-bad eraseblock, completely ignoring segment size.
- */
-static s64 mtd_scan_super(struct super_block *sb)
-{
-	s64 ofs, sb_ofs;
-	int err;
-
-	for (ofs = 0; ofs < sb->fssize; ofs += sb->erasesize) {
-		printf("\r%lld%% done. ", 100*ofs / sb->fssize);
-		err = mtd_erase(sb, ofs, sb->erasesize);
-		if (err) {
-			printf("Bad block at 0x%llx\n", ofs);
-			if ((ofs & (sb->segsize-1)) == 0) {
-				/* bad segment */
-				if (bb_count > 512)
-					return -EIO;
-				bb_array[bb_count++] = cpu_to_be32(ofs >> segshift);
-			}
-		} else {
-			if (ofs)
-				printf("Superblock is at %llx\n", ofs);
-			/* first non-bad block */
-			sb_ofs = ofs;
-			/* erase remaining blocks in segment */
-			for (; ofs & (sb->segsize-1); ofs+=sb->erasesize)
-				mtd_erase(sb, ofs, sb->erasesize);
-			return sb_ofs;
-		}
-	}
-	/* all bad */
-	return -EIO;
-}
-
 static int bdev_write(struct super_block *sb, u64 ofs, size_t size, void *buf)
 {
 	ssize_t ret;
 
-	lseek64(sb->fd, ofs, SEEK_SET);
-	ret = write(sb->fd, buf, size);
+	ret = pwrite(sb->fd, buf, size, ofs);
 	if (ret != size)
 		return -EIO;
 	return 0;
@@ -173,21 +128,14 @@ static int bdev_erase(struct super_block *sb, u64 ofs, size_t size)
 	return bdev_write(sb, ofs, size, sb->erase_buf);
 }
 
-static s64 bdev_scan_super(struct super_block *sb)
-{
-	return bdev_erase(sb, 0, sb->segsize);
-}
-
 static const struct logfs_device_operations mtd_ops = {
 	.write = bdev_write,
 	.erase = mtd_erase,
-	.scan_super = mtd_scan_super,
 };
 
 static const struct logfs_device_operations bdev_ops = {
 	.write = bdev_write,
 	.erase = bdev_erase,
-	.scan_super = bdev_scan_super,
 };
 
 
@@ -195,26 +143,6 @@ static const struct logfs_device_operations bdev_ops = {
 
 
 /* root inode */
-
-static int buf_write(struct super_block *sb, u64 ofs, void *data, size_t len)
-{
-	size_t space = len & ~(sb->writesize - 1);
-	int err;
-
-	if (space) {
-		err = sb->dev_ops->write(sb, ofs, space, data);
-		if (err)
-			return err;
-		ofs += space;
-		data += space;
-		len -= space;
-	}
-
-	if (len)
-		memcpy(sb->wbuf, data, len);
-	wbuf_ofs = ofs + len;
-	return 0;
-}
 
 static void set_segment_header(struct logfs_segment_header *sh, u8 type,
 		u8 level, u32 segno)
@@ -224,45 +152,64 @@ static void set_segment_header(struct logfs_segment_header *sh, u8 type,
 	sh->level = level;
 	sh->segno = cpu_to_be32(segno);
 	sh->ec = 0;
-	sh->gec = cpu_to_be64(1);
+	sh->gec = cpu_to_be64(segno);
 	sh->crc = logfs_crc32(sh, LOGFS_SEGMENT_HEADERSIZE, 4);
 }
 
-static int make_rootdir(struct super_block *sb)
+static int write_inode(struct super_block *sb, u64 ino)
 {
-	struct logfs_segment_header *sh;
-	struct logfs_object_header *oh;
 	struct logfs_disk_inode *di;
-	size_t size = sb->blocksize + LOGFS_OBJECT_HEADERSIZE + LOGFS_SEGMENT_HEADERSIZE;
-	int ret;
 
-	sh = calloc(size, 1);
-	if (!sh)
+	di = find_or_create_inode(sb, ino);
+	if (!di)
+		return -ENOMEM;
+	return logfs_file_write(sb, LOGFS_INO_MASTER, ino, OBJ_INODE, di);
+}
+
+static int write_segment_file(struct super_block *sb)
+{
+	struct logfs_disk_inode *di;
+	void *buf;
+	int err;
+	u64 ofs;
+
+	buf = calloc(1, sb->blocksize);
+	if (!buf)
 		return -ENOMEM;
 
-	oh = (void*)(sh+1);
-	di = (void*)(oh+1);
+	for (ofs = 0; ofs < (u64)sb->no_segs * 8; ofs += sb->blocksize) {
+		err = logfs_file_write(sb, LOGFS_INO_SEGFILE, ofs, OBJ_BLOCK,
+				buf);
+		if (err)
+			return err;
+	}
+	err = logfs_file_flush(sb, LOGFS_INO_SEGFILE);
+	if (err)
+		return err;
 
-	set_segment_header(sh, SEG_OSTORE, LOGFS_MAX_LEVELS,
-			segment_offset[OFS_ROOTDIR] >> segshift);
+	di = find_or_create_inode(sb, LOGFS_INO_SEGFILE);
+	if (!di)
+		return -ENOMEM;
+	di->di_flags	= 0;
+	di->di_mode	= cpu_to_be16(S_IFREG | 0);
+	di->di_refcount	= cpu_to_be32(1);
+	di->di_size	= cpu_to_be64(sb->no_segs * 8ull);
+	return write_inode(sb, LOGFS_INO_SEGFILE);
+}
 
+static int write_rootdir(struct super_block *sb)
+{
+	struct logfs_disk_inode *di;
+
+	di = find_or_create_inode(sb, LOGFS_INO_ROOT);
+	if (!di)
+		return -ENOMEM;
 	di->di_flags	= 0;
 	if (compress_rootdir)
 		di->di_flags |= cpu_to_be32(LOGFS_IF_COMPRESSED);
 	di->di_mode	= cpu_to_be16(S_IFDIR | 0755);
 	di->di_refcount	= cpu_to_be32(2);
-
-	oh->len = cpu_to_be16(sb->blocksize);
-	oh->type = OBJ_BLOCK;
-	oh->compr = COMPR_NONE;
-	oh->ino = cpu_to_be64(LOGFS_INO_MASTER);
-	oh->bix = cpu_to_be64(LOGFS_INO_ROOT);
-	oh->crc = logfs_crc32(oh, LOGFS_OBJECT_HEADERSIZE - 4, 4);
-	oh->data_crc = logfs_crc32(di, sb->blocksize, 0);
-
-	ret = buf_write(sb, segment_offset[OFS_ROOTDIR], sh, size);
-	free(sh);
-	return ret;
+	return write_inode(sb, LOGFS_INO_ROOT);
 }
 
 /* journal */
@@ -295,23 +242,22 @@ static size_t je_wbuf(struct super_block *sb, void *data, u16 *type)
 	return sb->writesize;
 }
 
-static size_t je_badsegments(struct super_block *sb, void *data, u16 *type)
-{
-	memcpy(data, bb_array, sb->blocksize);
-	*type = JE_BADSEGMENTS;
-	return sb->blocksize;
-}
-
 static size_t je_anchor(struct super_block *sb, void *_da, u16 *type)
 {
+	struct logfs_disk_inode *di;
 	struct logfs_je_anchor *da = _da;
+	int i;
+
+	di = find_or_create_inode(sb, LOGFS_INO_MASTER);
+	if (!di)
+		return -ENOMEM;
 
 	memset(da, 0, sizeof(*da));
 	da->da_last_ino	= cpu_to_be64(LOGFS_RESERVED_INOS);
-	da->da_size	= cpu_to_be64((LOGFS_INO_ROOT+1) * sb->blocksize);
-	da->da_used_bytes = cpu_to_be64(sb->blocksize + LOGFS_OBJECT_HEADERSIZE);
-	da->da_data[LOGFS_INO_ROOT] = cpu_to_be64(segment_offset[OFS_ROOTDIR]
-				+ LOGFS_SEGMENT_HEADERSIZE);
+	da->da_size	= cpu_to_be64((LOGFS_INO_SEGFILE+1) * sb->blocksize);
+	da->da_used_bytes = di->di_used_bytes;
+	for (i = 0; i < LOGFS_EMBEDDED_FIELDS; i++)
+		da->da_data[i] = di->di_data[i];
 	*type = JE_ANCHOR;
 	return sizeof(*da);
 }
@@ -321,21 +267,36 @@ static size_t je_dynsb(struct super_block *sb, void *_dynsb, u16 *type)
 	struct logfs_je_dynsb *dynsb = _dynsb;
 
 	memset(dynsb, 0, sizeof(*dynsb));
-	dynsb->ds_used_bytes	= cpu_to_be64(sb->blocksize + LOGFS_OBJECT_HEADERSIZE);
+	dynsb->ds_used_bytes	= cpu_to_be64(sb->used_bytes);
 	*type = JE_DYNSB;
 	return sizeof(*dynsb);
 }
 
-static size_t je_areas(struct super_block *sb, void *_a, u16 *type)
+static size_t je_alias(struct super_block *sb, void *_oa, u16 *type)
 {
-	struct logfs_je_areas *a = _a;
-	int l = LOGFS_MAX_LEVELS;
+	struct logfs_obj_alias *oa = _oa;
+	struct logfs_segment_entry *se;
+	u64 val;
+	int i, k;
 
-	memset(a, 0, sizeof(*a));
-	a->used_bytes[l] = cpu_to_be32(wbuf_ofs - segment_offset[OFS_ROOTDIR]);
-	a->segno[l] = cpu_to_be32(segment_offset[OFS_ROOTDIR] >> segshift);
-	*type = JE_AREAS;
-	return sizeof(*a);
+	memset(oa, 0, sb->blocksize);
+	k = 0;
+	for (i = 0; i < sb->no_segs; i++) {
+		se = sb->segment_entry + i;
+		if (se->ec_level || se->valid) {
+			val = (u64)be32_to_cpu(se->ec_level) << 32 |
+				be32_to_cpu(se->valid);
+			oa[k].ino = cpu_to_be64(LOGFS_INO_SEGFILE);
+			oa[k].bix = cpu_to_be64(i >> blockshift);
+			oa[k].val = cpu_to_be64(val);
+			oa[k].level = 0;
+			oa[k].child_no = cpu_to_be16(i & (sb->blocksize - 1));
+			k++;
+		}
+	}
+
+	*type = JE_OBJ_ALIAS;
+	return k * sizeof(*oa);
 }
 
 static size_t je_commit(struct super_block *sb, void *h, u16 *type)
@@ -346,22 +307,22 @@ static size_t je_commit(struct super_block *sb, void *h, u16 *type)
 }
 
 static size_t write_je(struct super_block *sb,
-		size_t jpos, void *scratch, void *header,
+		size_t jpos, void *scratch, void *header, u32 segno,
 		size_t (*write)(struct super_block *sb, void *scratch,
 			u16 *type))
 {
+	u64 ofs = (u64)segno * sb->segsize;
 	void *data;
 	ssize_t len, max, compr_len, pad_len;
 	u16 type;
 	u8 compr = COMPR_ZLIB;
 
-	/* carefule: segment_offset[OFS_JOURNAL] must match make_journal() */
 	header += jpos;
 	data = header + sizeof(struct logfs_journal_header);
 
 	len = write(sb, scratch, &type);
 	if (type != JE_COMMIT)
-		je_array[no_je++] = cpu_to_be64(segment_offset[OFS_JOURNAL] + jpos);
+		je_array[no_je++] = cpu_to_be64(ofs + jpos);
 	if (len == 0)
 		return write_header(header, 0, type);
 
@@ -384,29 +345,29 @@ static int make_journal(struct super_block *sb)
 {
 	void *journal, *scratch;
 	size_t jpos;
-	int ret;
+	u32 seg;
 
-	journal = calloc(2*sb->blocksize, 1);
+	seg = sb->journal_seg[0];
+	/* TODO: add segment to superblock, segfile */
+	journal = calloc(1, sb->segsize);
 	if (!journal)
 		return -ENOMEM;
 
-	scratch = journal + sb->blocksize;
+	scratch = calloc(2, sb->blocksize);
+	if (!scratch)
+		return -ENOMEM;
 
-	set_segment_header(journal, SEG_JOURNAL, 0,
-			segment_offset[OFS_JOURNAL] >> segshift);
+	set_segment_header(journal, SEG_JOURNAL, 0, seg);
 	jpos = ALIGN(sizeof(struct logfs_segment_header), 16);
 	/* erasecount is not written - implicitly set to 0 */
 	/* neither are summary, index, wbuf */
 	if (sb->writesize > 1)
-		jpos += write_je(sb, jpos, scratch, journal, je_wbuf);
-	jpos += write_je(sb, jpos, scratch, journal, je_badsegments);
-	jpos += write_je(sb, jpos, scratch, journal, je_anchor);
-	jpos += write_je(sb, jpos, scratch, journal, je_dynsb);
-	jpos += write_je(sb, jpos, scratch, journal, je_areas);
-	jpos += write_je(sb, jpos, scratch, journal, je_commit);
-	ret = sb->dev_ops->write(sb, segment_offset[OFS_JOURNAL], sb->blocksize, journal);
-	free(journal);
-	return ret;
+		jpos += write_je(sb, jpos, scratch, journal, seg, je_wbuf);
+	jpos += write_je(sb, jpos, scratch, journal, seg, je_anchor);
+	jpos += write_je(sb, jpos, scratch, journal, seg, je_dynsb);
+	jpos += write_je(sb, jpos, scratch, journal, seg, je_alias);
+	jpos += write_je(sb, jpos, scratch, journal, seg, je_commit);
+	return sb->dev_ops->write(sb, seg * sb->segsize, sb->segsize, journal);
 }
 
 /* superblock */
@@ -416,7 +377,7 @@ static int make_super(struct super_block *sb)
 	struct logfs_disk_super _ds, *ds = &_ds;
 	void *sector;
 	int secsize = ALIGN(sizeof(*ds), sb->writesize);
-	int ret;
+	int i, ret;
 
 	sector = calloc(secsize, 1);
 	if (!sector)
@@ -441,53 +402,41 @@ static int make_super(struct super_block *sb)
 	ds->ds_block_shift	= blockshift;
 	ds->ds_write_shift	= writeshift;
 
-	ds->ds_journal_seg[0]	= cpu_to_be64(1);
-	ds->ds_journal_seg[1]	= cpu_to_be64(2);
-	ds->ds_journal_seg[2]	= 0;
-	ds->ds_journal_seg[3]	= 0;
+	for (i = 0; i < no_journal_segs; i++)
+		ds->ds_journal_seg[i]	= cpu_to_be32(sb->journal_seg[i]);
 
 	ds->ds_root_reserve	= 0;
 
 	ds->ds_crc = logfs_crc32(ds, sizeof(*ds), LOGFS_SEGMENT_HEADERSIZE + 12);
 
 	memcpy(sector, ds, sizeof(*ds));
-	ret = sb->dev_ops->write(sb, segment_offset[OFS_SB], secsize, sector);
+	ret = sb->dev_ops->write(sb, sb->sb_ofs, secsize, sector);
 	free(sector);
 	return ret;
 }
 
 /* main stuff */
 
-static int bad_block_scan(struct super_block *sb)
+static void prepare_sb(struct super_block *sb)
 {
-	int seg, err;
-	s64 ofs, sb_ofs;
+	u32 segno = get_segment(sb);
 
-	seg = 0;
-	bb_count = 0;
-	sb_ofs = sb->dev_ops->scan_super(sb);
-	if (sb_ofs < 0)
-		return -EIO;
+	sb->segment_entry[segno].ec_level = ec_level(1, 0);
+	sb->segment_entry[segno].valid = cpu_to_be32(RESERVED);
+	sb->sb_ofs = (u64)segno * sb->segsize;
+}
 
-	segment_offset[seg++] = sb_ofs;
-	for (ofs = ALIGN(sb_ofs+1, sb->segsize); ofs < sb->fssize; ofs += sb->segsize) {
-		printf("\r%lld%% done. ", 100*ofs / sb->fssize);
-		err = sb->dev_ops->erase(sb, ofs, sb->segsize);
-		if (err) {
-			/* bad segment */
-			if (bb_count > 512)
-				return -EIO;
-			bb_array[bb_count++] = cpu_to_be32(ofs >> segshift);
-			printf("Bad block at 0x%llx\n", ofs);
-		} else {
-			/* good segment */
-			if (seg < OFS_COUNT)
-				segment_offset[seg++] = ofs;
-			else if (quick_bad_block_scan)
-				return 0;
-		}
+static void prepare_journal(struct super_block *sb)
+{
+	int i;
+	u32 segno;
+
+	for (i = 0; i < no_journal_segs; i++) {
+		segno = get_segment(sb);
+		sb->journal_seg[i] = segno;
+		sb->segment_entry[segno].ec_level = ec_level(1, 0);
+		sb->segment_entry[segno].valid = cpu_to_be32(RESERVED);
 	}
-	return 0;
 }
 
 static void mkfs(struct super_block *sb)
@@ -514,8 +463,8 @@ static void mkfs(struct super_block *sb)
 	sb->blocksize = 1 << blockshift;
 	sb->writesize = 1 << writeshift;
 
-	no_segs = sb->fssize >> segshift;
-	sb->fssize = no_segs << segshift;
+	sb->no_segs = sb->fssize >> segshift;
+	sb->fssize = sb->no_segs << segshift;
 
 	printf("Will create filesystem with the following details:\n");
 	printf("              hex:   decimal:\n");
@@ -538,13 +487,33 @@ static void mkfs(struct super_block *sb)
 			fail("aborting...");
 	}
 
-	ret = bad_block_scan(sb);
-	if (ret)
-		fail("bad block scan failed");
+	sb->segment_entry = calloc(sb->no_segs, sizeof(sb->segment_entry[0]));
+	if (!sb->segment_entry)
+		fail("out of memory");
 
-	ret = make_rootdir(sb);
+	prepare_sb(sb);
+	prepare_journal(sb);
+
+	ret = write_segment_file(sb);
+	if (ret)
+		fail("could not write segment file");
+
+	ret = write_rootdir(sb);
 	if (ret)
 		fail("could not create root inode");
+
+	ret = flush_segments(sb);
+	if (ret)
+		fail("could not write segments");
+	/*
+	 * prepare sb
+	 * prepare journal
+	 * write segment file (create alias)
+	 * write inodes (create alias)
+	 * flush segments
+	 * write journal (including aliases)
+	 * write sb
+	 */
 
 	ret = make_journal(sb);
 	if (ret)
