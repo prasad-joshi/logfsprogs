@@ -268,6 +268,8 @@ static size_t je_dynsb(struct super_block *sb, void *_dynsb, u16 *type)
 
 	memset(dynsb, 0, sizeof(*dynsb));
 	dynsb->ds_used_bytes	= cpu_to_be64(sb->used_bytes);
+	/* Set ds_gec to something beyond anything mkfs would use */
+	dynsb->ds_gec		= cpu_to_be64(0x1000);
 	*type = JE_DYNSB;
 	return sizeof(*dynsb);
 }
