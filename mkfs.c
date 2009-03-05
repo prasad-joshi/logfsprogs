@@ -40,10 +40,11 @@ static unsigned user_segshift = -1;
 static unsigned user_blockshift = -1;
 static unsigned user_writeshift = -1;
 
-static unsigned segshift = 17;
-static unsigned blockshift = 12;
-static unsigned writeshift = 0;
-static unsigned no_journal_segs = 4;
+static u8 segshift = 17;
+static u8 blockshift = 12;
+static u8 writeshift = 0;
+static u32 no_journal_segs = 4;
+static u32 bad_seg_reserve = 4;
 
 static u16 version;
 
@@ -388,6 +389,8 @@ static int make_super(struct super_block *sb)
 	memset(ds, 0, sizeof(*ds));
 	set_segment_header((void *)ds, SEG_SUPER, 0, 0);
 
+	bad_seg_reserve = max(bad_seg_reserve, no_journal_segs);
+
 	ds->ds_magic		= cpu_to_be64(LOGFS_MAGIC);
 	ds->ds_ifile_levels	= 3; /* 2+1, 1GiB */
 	ds->ds_iblock_levels	= 4; /* 3+1, 512GiB */
@@ -403,6 +406,7 @@ static int make_super(struct super_block *sb)
 	ds->ds_segment_shift	= segshift;
 	ds->ds_block_shift	= blockshift;
 	ds->ds_write_shift	= writeshift;
+	ds->ds_bad_seg_reserve	= cpu_to_be32(bad_seg_reserve);
 
 	for (i = 0; i < no_journal_segs; i++)
 		ds->ds_journal_seg[i]	= cpu_to_be32(sb->journal_seg[i]);
@@ -617,7 +621,9 @@ int main(int argc, char **argv)
 		int oi = 1;
 		char short_opts[] = "chs:w:";
 		static const struct option long_opts[] = {
+			{"bad-segment-reserve",	1, NULL, 'B'},
 			{"compress",		0, NULL, 'c'},
+			{"journal-segments",	1, NULL, 'j'},
 			{"help",		0, NULL, 'h'},
 			{"non-interactive",	0, NULL, 'n'},
 			{"demo-mode",		0, NULL, 'q'},
@@ -632,8 +638,14 @@ int main(int argc, char **argv)
 		case 'b':
 			user_blockshift = strtoul(optarg, NULL, 0);
 			break;
+		case 'B':
+			bad_seg_reserve = strtoul(optarg, NULL, 0);
+			break;
 		case 'c':
 			compress_rootdir = 1;
+			break;
+		case 'j':
+			no_journal_segs = strtoul(optarg, NULL, 0);
 			break;
 		case 'h':
 			usage();
@@ -651,7 +663,8 @@ int main(int argc, char **argv)
 			user_writeshift = strtoul(optarg, NULL, 0);
 			break;
 		default:
-			fail("unknown option\n");
+			usage();
+			exit(EXIT_FAILURE);
 		}
 	}
 
