@@ -178,7 +178,7 @@ static int write_segment_file(struct super_block *sb)
 	if (!buf)
 		return -ENOMEM;
 
-	for (ofs = 0; ofs < (u64)sb->no_segs * 8; ofs += sb->blocksize) {
+	for (ofs = 0; ofs * sb->blocksize < (u64)sb->no_segs * 8; ofs++) {
 		err = logfs_file_write(sb, LOGFS_INO_SEGFILE, ofs, OBJ_BLOCK,
 				buf);
 		if (err)
@@ -234,13 +234,6 @@ static size_t write_header(struct logfs_journal_header *h, size_t datalen,
 		u16 type)
 {
 	return __write_header(h, datalen, datalen, type, COMPR_NONE);
-}
-
-static size_t je_wbuf(struct super_block *sb, void *data, u16 *type)
-{
-	memcpy(data, sb->wbuf, sb->writesize);
-	*type = JEG_WBUF + LOGFS_MAX_LEVELS; /* inode level */
-	return sb->writesize;
 }
 
 static size_t je_anchor(struct super_block *sb, void *_da, u16 *type)
@@ -364,8 +357,6 @@ static int make_journal(struct super_block *sb)
 	jpos = ALIGN(sizeof(struct logfs_segment_header), 16);
 	/* erasecount is not written - implicitly set to 0 */
 	/* neither are summary, index, wbuf */
-	if (sb->writesize > 1)
-		jpos += write_je(sb, jpos, scratch, journal, seg, je_wbuf);
 	jpos += write_je(sb, jpos, scratch, journal, seg, je_anchor);
 	jpos += write_je(sb, jpos, scratch, journal, seg, je_dynsb);
 	jpos += write_je(sb, jpos, scratch, journal, seg, je_alias);
@@ -400,7 +391,7 @@ static int make_super(struct super_block *sb)
 	ds->ds_feature_ro_compat= 0;
 
 	ds->ds_feature_compat	= 0;
-	ds->ds_flags		= 0;
+	ds->ds_feature_flags	= 0;
 
 	ds->ds_filesystem_size	= cpu_to_be64(sb->fssize);
 	ds->ds_segment_shift	= segshift;
@@ -410,13 +401,17 @@ static int make_super(struct super_block *sb)
 
 	for (i = 0; i < no_journal_segs; i++)
 		ds->ds_journal_seg[i]	= cpu_to_be32(sb->journal_seg[i]);
+	ds->ds_super_ofs[0]	= cpu_to_be64(sb->sb_ofs1);
+	ds->ds_super_ofs[1]	= cpu_to_be64(sb->sb_ofs2);
 
 	ds->ds_root_reserve	= 0;
 
 	ds->ds_crc = logfs_crc32(ds, sizeof(*ds), LOGFS_SEGMENT_HEADERSIZE + 12);
 
 	memcpy(sector, ds, sizeof(*ds));
-	ret = sb->dev_ops->write(sb, sb->sb_ofs, secsize, sector);
+	ret = sb->dev_ops->write(sb, sb->sb_ofs1, secsize, sector);
+	if (!ret)
+		ret = sb->dev_ops->write(sb, sb->sb_ofs2, secsize, sector);
 	free(sector);
 	return ret;
 }
@@ -425,11 +420,19 @@ static int make_super(struct super_block *sb)
 
 static void prepare_sb(struct super_block *sb)
 {
-	u32 segno = get_segment(sb);
+	u32 segno;
 
+	/* 1st superblock at the beginning */
+	segno = get_segment(sb);
 	sb->segment_entry[segno].ec_level = ec_level(1, 0);
 	sb->segment_entry[segno].valid = cpu_to_be32(RESERVED);
-	sb->sb_ofs = (u64)segno * sb->segsize;
+	sb->sb_ofs1 = (u64)segno * sb->segsize;
+
+	/* 2nd superblock at the end */
+	segno = sb->no_segs - 1;
+	sb->segment_entry[segno].ec_level = ec_level(1, 0);
+	sb->segment_entry[segno].valid = cpu_to_be32(RESERVED);
+	sb->sb_ofs2 = (sb->fssize & ~0xfffULL) - 0x1000;
 }
 
 static void prepare_journal(struct super_block *sb)
@@ -542,7 +545,7 @@ static struct super_block *__open_device(const char *name)
 	int err;
 
 	sb = zalloc(sizeof(*sb));
-	sb->fd = open(name, O_WRONLY);
+	sb->fd = open(name, O_WRONLY | O_EXCL);
 	if (sb->fd == -1)
 		fail("could not open device");
 
@@ -584,10 +587,6 @@ static struct super_block *__open_device(const char *name)
 			fail("block ioctl failed");
 		break;
 	}
-
-	sb->wbuf = malloc(sb->writesize);
-	if (!sb->wbuf)
-		fail("out of memory");
 
 	sb->dev_ops = ops;
 	return sb;

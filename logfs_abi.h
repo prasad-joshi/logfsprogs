@@ -79,35 +79,18 @@ static inline void check_##type(void)				\
 #define LOGFS_BLOCK_BITS	(9)
 
 /*
- * Number of blocks at various levels of indirection.  Each inode originally
- * had 9 block pointers.  Later the inode size was doubled and there are now
- * 9+16 pointers - the notation is just historical.
- *
- * I0_BLOCKS is the number of direct block pointer in each inode.  The
- * remaining five pointers are for indirect pointers, up to 5x indirect.
- * Only 3x is tested and supported at the moment.  5x would allow for truly
- * humongous files if the need ever arises.
- * I1_BLOCKS is the number of blocks behind a 1x indirect block,
- * I2_BLOCKS is the number of blocks behind a 2x indirect block, not counting
- * the 1x indirect blocks.  etc.
+ * Number of blocks at various levels of indirection.  There are 16 direct
+ * block pointers plus a single indirect pointer.
  */
-/* FIXME: change I0_BLOCKS to 16 */
-#define I0_BLOCKS		(4+16)
+#define I0_BLOCKS		(16)
 #define I1_BLOCKS		LOGFS_BLOCK_FACTOR
 #define I2_BLOCKS		(LOGFS_BLOCK_FACTOR * I1_BLOCKS)
 #define I3_BLOCKS		(LOGFS_BLOCK_FACTOR * I2_BLOCKS)
 #define I4_BLOCKS		(LOGFS_BLOCK_FACTOR * I3_BLOCKS)
 #define I5_BLOCKS		(LOGFS_BLOCK_FACTOR * I4_BLOCKS)
 
-/* The indices in the block array where the Nx indirect block pointers reside */
-#define I1_INDEX		(4+16)
-#define I2_INDEX		(5+16)
-#define I3_INDEX		(6+16)
-#define I4_INDEX		(7+16)
-#define I5_INDEX		(8+16)
-
-/* The total number of block pointers in each inode */
-#define LOGFS_EMBEDDED_FIELDS	(9+16)
+#define INDIRECT_INDEX		I0_BLOCKS
+#define LOGFS_EMBEDDED_FIELDS	(I0_BLOCKS + 1)
 
 /*
  * Sizes at which files require another level of indirection.  Files smaller
@@ -258,14 +241,15 @@ struct logfs_disk_super {
 	__be64	ds_feature_ro_compat;
 
 	__be64	ds_feature_compat;
-	__be64	ds_flags;
+	__be64	ds_feature_flags;
 
 	__be64	ds_root_reserve;
 	__be64  ds_speed_reserve;
 
 	__be32	ds_journal_seg[LOGFS_JOURNAL_SEGS];
 
-	__be64	pad3[10];
+	__be64	ds_super_ofs[2];
+	__be64	pad3[8];
 };
 
 SIZE_CHECK(logfs_disk_super, 256);
@@ -376,7 +360,7 @@ struct logfs_disk_inode {
 	__be64	di_data[LOGFS_EMBEDDED_FIELDS];
 };
 
-SIZE_CHECK(logfs_disk_inode, 264);
+SIZE_CHECK(logfs_disk_inode, 200);
 
 #define INODE_POINTER_OFS \
 	(offsetof(struct logfs_disk_inode, di_data) / sizeof(__be64))
@@ -384,6 +368,7 @@ SIZE_CHECK(logfs_disk_inode, 264);
 	(offsetof(struct logfs_disk_inode, di_used_bytes) / sizeof(__be64))
 #define INODE_SIZE_OFS \
 	(offsetof(struct logfs_disk_inode, di_size) / sizeof(__be64))
+#define INODE_HEIGHT_OFS	(0)
 
 /**
  * struct logfs_disk_dentry - on-medium dentry structure
@@ -429,7 +414,7 @@ SIZE_CHECK(logfs_segment_entry, 8);
  *
  * @h_crc:			crc32 of journal entry
  * @h_len:			length of compressed journal entry,
- * 				not including header
+ *				not including header
  * @h_datalen:			length of uncompressed data
  * @h_type:			JE type
  * @h_version:			unnormalized version of journal entry
@@ -448,6 +433,40 @@ struct logfs_journal_header {
 
 SIZE_CHECK(logfs_journal_header, 16);
 
+/*
+ * Life expectency of data.
+ * VIM_DEFAULT		- default vim
+ * VIM_SEGFILE		- for segment file only - very short-living
+ * VIM_GC		- GC'd data - likely long-living
+ */
+enum logfs_vim {
+	VIM_DEFAULT	= 0,
+	VIM_SEGFILE	= 1,
+};
+
+/**
+ * struct logfs_je_area - wbuf header
+ *
+ * @segno:			segment number of area
+ * @used_bytes:			number of bytes already used
+ * @gc_level:			GC level
+ * @vim:			life expectancy of data
+ *
+ * "Areas" are segments currently being used for writing.  There is at least
+ * one area per GC level.  Several may be used to seperate long-living from
+ * short-living data.  If an area with unknown vim is encountered, it can
+ * simply be closed.
+ * The write buffer immediately follow this header.
+ */
+struct logfs_je_area {
+	__be32	segno;
+	__be32	used_bytes;
+	__u8	gc_level;
+	__u8	vim;
+} __attribute__((packed));
+
+SIZE_CHECK(logfs_je_area, 10);
+
 /**
  * struct logfs_je_dynsb - dynamic superblock
  *
@@ -456,6 +475,7 @@ SIZE_CHECK(logfs_journal_header, 16);
  * @ds_rename_dir:		source directory ino (see dir.c documentation)
  * @ds_rename_pos:		position of source dd (see dir.c documentation)
  * @ds_victim_ino:		victims of incomplete dir operation (see dir.c)
+ * @ds_victim_ino:		parent inode of victim (see dir.c)
  * @ds_used_bytes:		number of used bytes
  */
 struct logfs_je_dynsb {
@@ -466,10 +486,14 @@ struct logfs_je_dynsb {
 	__be64	ds_rename_pos;
 
 	__be64	ds_victim_ino;
+	__be64	ds_victim_parent; /* XXX */
+
 	__be64	ds_used_bytes;
+	__be32	ds_generation;
+	__be32	pad;
 };
 
-SIZE_CHECK(logfs_je_dynsb, 48);
+SIZE_CHECK(logfs_je_dynsb, 64);
 
 /**
  * struct logfs_je_anchor - anchor of filesystem tree, aka master inode
@@ -484,10 +508,13 @@ struct logfs_je_anchor {
 	__be64	da_last_ino;
 
 	__be64	da_used_bytes;
+	u8	da_height;
+	u8	pad[7];
+
 	__be64	da_data[LOGFS_EMBEDDED_FIELDS];
 };
 
-SIZE_CHECK(logfs_je_anchor, 224);
+SIZE_CHECK(logfs_je_anchor, 168);
 
 /**
  * struct logfs_je_spillout - spillout entry (from 1st to 2nd journal)
@@ -550,23 +577,6 @@ struct logfs_obj_alias {
 SIZE_CHECK(logfs_obj_alias, 32);
 
 /**
- * struct logfs_je_areas - management information for current areas
- *
- * @used_bytes:			number of bytes already used
- * @segno:			segment number of area
- *
- * "Areas" are segments currently being used for writing.  There is one area
- * per GC level.  Each erea also has a write buffer that is stored in the
- * journal, in entries 0x10..0x1f.
- */
-struct logfs_je_areas {
-	__be32	used_bytes[16];
-	__be32	segno[16];
-};
-
-SIZE_CHECK(logfs_je_areas, 128);
-
-/**
  * Compression types.
  *
  * COMPR_NONE	- uncompressed
@@ -590,11 +600,8 @@ enum {
  * JE_ANCHOR	- anchor aka master inode aka inode file's inode
  * JE_ERASECOUNT  erasecounts for all journal segments
  * JE_SPILLOUT	- unused
- * JE_AREAS	- area description sans wbuf
- * JE_FREESEGS	- free segments that can get deleted immediatly
  * JE_SEG_ALIAS	- aliases segments
- *
- * JEG_WBUF	- wbuf group, one entry per area
+ * JE_AREA	- area description
  *
  * JE_LAST	- largest possible journal entry number
  */
@@ -607,14 +614,11 @@ enum {
 	JE_ANCHOR	= 0x04,
 	JE_ERASECOUNT	= 0x05,	/* move to segment file */
 	JE_SPILLOUT	= 0x06,
-	JE_AREAS	= 0x09,
-	JE_FREESEGS	= 0x0a,	/* move to segment file */
 	JE_SEG_ALIAS	= 0x0b,
 	JE_OBJ_ALIAS	= 0x0d,
+	JE_AREA		= 0x0e,
 
-	JEG_WBUF	= 0x10,
-
-	JE_LAST		= 0x2f,
+	JE_LAST		= 0x0e,
 };
 
 #endif

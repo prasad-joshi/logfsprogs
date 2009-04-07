@@ -38,8 +38,8 @@ struct super_block {
 	struct logfs_segment_entry *segment_entry;
 
 	void *erase_buf;
-	u64 sb_ofs;
-	void *wbuf;
+	u64 sb_ofs1;
+	u64 sb_ofs2;
 	struct btree_head64 ino_tree;
 	struct btree_head128 block_tree[LOGFS_NO_AREAS];
 	const struct logfs_device_operations *dev_ops;
