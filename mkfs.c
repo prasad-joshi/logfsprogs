@@ -479,7 +479,7 @@ static void mkfs(struct super_block *sb)
 	sb->writesize = 1 << writeshift;
 
 	sb->no_segs = sb->fssize >> segshift;
-	sb->fssize = sb->no_segs << segshift;
+	sb->fssize = (u64)sb->no_segs << segshift;
 
 	printf("Will create filesystem with the following details:\n");
 	printf("              hex:   decimal:\n");
