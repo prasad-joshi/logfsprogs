@@ -106,11 +106,12 @@ static int finish_area(struct super_block *sb, struct logfs_area *area,
 
 static int grow_inode(struct super_block *sb, u64 ino, size_t len)
 {
-	struct logfs_disk_inode *di = find_or_create_inode(sb, ino);
-	if (!di)
+	struct inode *inode = find_or_create_inode(sb, ino);
+	if (!inode)
 		return -ENOMEM;
 
-	di->di_used_bytes = cpu_to_be64(len + be64_to_cpu(di->di_used_bytes));
+	inode->di.di_used_bytes =
+		cpu_to_be64(len + be64_to_cpu(inode->di.di_used_bytes));
 	sb->used_bytes += len;
 	return 0;
 }

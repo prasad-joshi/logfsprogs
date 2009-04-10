@@ -170,6 +170,13 @@ static inline void *btree_remove64(struct btree_head64 *head, u64 key)
 	return btree_remove(&head->h, &btree_geo64, (unsigned long *)&key);
 }
 
+static inline u64 btree_last64(struct btree_head64 *head)
+{
+	u64 *ret;
+	ret = (u64 *)btree_last(&head->h, &btree_geo64);
+	return *ret;
+}
+
 static inline int btree_merge64(struct btree_head64 *target,
 		struct btree_head64 *victim)
 {

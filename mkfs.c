@@ -159,16 +159,18 @@ static void set_segment_header(struct logfs_segment_header *sh, u8 type,
 
 static int write_inode(struct super_block *sb, u64 ino)
 {
-	struct logfs_disk_inode *di;
+	struct inode *inode;
 
-	di = find_or_create_inode(sb, ino);
-	if (!di)
+	inode = find_or_create_inode(sb, ino);
+	if (!inode)
 		return -ENOMEM;
-	return logfs_file_write(sb, LOGFS_INO_MASTER, ino, OBJ_INODE, di);
+	return logfs_file_write(sb, LOGFS_INO_MASTER, ino, 0, OBJ_INODE,
+			&inode->di);
 }
 
 static int write_segment_file(struct super_block *sb)
 {
+	struct inode *inode;
 	struct logfs_disk_inode *di;
 	void *buf;
 	int err;
@@ -178,8 +180,17 @@ static int write_segment_file(struct super_block *sb)
 	if (!buf)
 		return -ENOMEM;
 
+	inode = find_or_create_inode(sb, LOGFS_INO_SEGFILE);
+	if (!inode)
+		return -ENOMEM;
+	di = &inode->di;
+	di->di_flags	= 0;
+	di->di_mode	= cpu_to_be16(S_IFREG | 0);
+	di->di_refcount	= cpu_to_be32(1);
+	di->di_size	= cpu_to_be64(sb->no_segs * 8ull);
+
 	for (ofs = 0; ofs * sb->blocksize < (u64)sb->no_segs * 8; ofs++) {
-		err = logfs_file_write(sb, LOGFS_INO_SEGFILE, ofs, OBJ_BLOCK,
+		err = logfs_file_write(sb, LOGFS_INO_SEGFILE, ofs, 0, OBJ_BLOCK,
 				buf);
 		if (err)
 			return err;
@@ -188,23 +199,18 @@ static int write_segment_file(struct super_block *sb)
 	if (err)
 		return err;
 
-	di = find_or_create_inode(sb, LOGFS_INO_SEGFILE);
-	if (!di)
-		return -ENOMEM;
-	di->di_flags	= 0;
-	di->di_mode	= cpu_to_be16(S_IFREG | 0);
-	di->di_refcount	= cpu_to_be32(1);
-	di->di_size	= cpu_to_be64(sb->no_segs * 8ull);
 	return write_inode(sb, LOGFS_INO_SEGFILE);
 }
 
 static int write_rootdir(struct super_block *sb)
 {
+	struct inode *inode;
 	struct logfs_disk_inode *di;
 
-	di = find_or_create_inode(sb, LOGFS_INO_ROOT);
-	if (!di)
+	inode = find_or_create_inode(sb, LOGFS_INO_ROOT);
+	if (!inode)
 		return -ENOMEM;
+	di = &inode->di;
 	di->di_flags	= 0;
 	if (compress_rootdir)
 		di->di_flags |= cpu_to_be32(LOGFS_IF_COMPRESSED);
@@ -238,20 +244,20 @@ static size_t write_header(struct logfs_journal_header *h, size_t datalen,
 
 static size_t je_anchor(struct super_block *sb, void *_da, u16 *type)
 {
-	struct logfs_disk_inode *di;
+	struct inode *inode;
 	struct logfs_je_anchor *da = _da;
 	int i;
 
-	di = find_or_create_inode(sb, LOGFS_INO_MASTER);
-	if (!di)
+	inode = find_or_create_inode(sb, LOGFS_INO_MASTER);
+	if (!inode)
 		return -ENOMEM;
 
 	memset(da, 0, sizeof(*da));
 	da->da_last_ino	= cpu_to_be64(LOGFS_RESERVED_INOS);
 	da->da_size	= cpu_to_be64((LOGFS_INO_SEGFILE+1) * sb->blocksize);
-	da->da_used_bytes = di->di_used_bytes;
+	da->da_used_bytes = inode->di.di_used_bytes;
 	for (i = 0; i < LOGFS_EMBEDDED_FIELDS; i++)
-		da->da_data[i] = di->di_data[i];
+		da->da_data[i] = inode->di.di_data[i];
 	*type = JE_ANCHOR;
 	return sizeof(*da);
 }
@@ -545,7 +551,7 @@ static struct super_block *__open_device(const char *name)
 	int err;
 
 	sb = zalloc(sizeof(*sb));
-	sb->fd = open(name, O_WRONLY | O_EXCL);
+	sb->fd = open(name, O_WRONLY | O_EXCL | O_LARGEFILE);
 	if (sb->fd == -1)
 		fail("could not open device");
 

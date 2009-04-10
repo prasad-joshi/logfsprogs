@@ -16,6 +16,7 @@ CHECKFLAGS := -D__CHECK_ENDIAN__
 CFLAGS	:= -std=gnu99
 CFLAGS	+= -Wall
 CFLAGS	+= -Os
+CFLAGS	+= -D_FILE_OFFSET_BITS=64
 #CFLAGS	+= -g
 #CFLAGS	+= -fprofile-arcs -ftest-coverage
 

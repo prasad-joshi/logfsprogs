@@ -45,6 +45,11 @@ struct super_block {
 	const struct logfs_device_operations *dev_ops;
 };
 
+struct inode {
+	struct btree_head64 block_tree[LOGFS_MAX_LEVELS];
+	struct logfs_disk_inode di;
+};
+
 void check_crc32(void);
 void fail(const char *s) __attribute__ ((__noreturn__));
 struct super_block *open_device(const char *name);
@@ -60,9 +65,9 @@ static inline void *zalloc(size_t bytes)
 }
 
 /* readwrite.c */
-struct logfs_disk_inode *find_or_create_inode(struct super_block *sb, u64 ino);
-int logfs_file_write(struct super_block *sb, u64 ino, u64 bix, u8 type,
-	void *buf);
+struct inode *find_or_create_inode(struct super_block *sb, u64 ino);
+int logfs_file_write(struct super_block *sb, u64 ino, u64 bix, u8 level,
+		u8 type, void *buf);
 int logfs_file_flush(struct super_block *sb, u64 ino);
 
 /* segment.c */
