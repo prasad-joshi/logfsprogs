@@ -1,5 +1,6 @@
 #
 # Use "make C=1 foo" to enable sparse checking
+# Use "make S=1 foo" to compile statically
 #
 BIN	:= mklogfs
 SRC	:= mkfs.c fsck.c lib.c journal.c segment.c btree.c readwrite.c
@@ -17,7 +18,7 @@ CFLAGS	:= -std=gnu99
 CFLAGS	+= -Wall
 CFLAGS	+= -Os
 CFLAGS	+= -D_FILE_OFFSET_BITS=64
-#CFLAGS	+= -g
+CFLAGS	+= -g
 #CFLAGS	+= -fprofile-arcs -ftest-coverage
 
 all: $(BIN)
@@ -25,13 +26,20 @@ all: $(BIN)
 $(ZLIB_O): /usr/lib/libz.a
 	ar -x /usr/lib/libz.a $@
 
-mklogfs: $(ZLIB_O)
+ifdef S
+EXTRA_OBJ := $(ZLIB_O)
+CFLAGS += -static
+else
+CFLAGS += -lz
+endif
+
+mklogfs: $(EXTRA_OBJ)
 mklogfs: mkfs.o lib.o btree.o segment.o readwrite.o
-	$(CC) $(CFLAGS) -static -lz -o $@ $^
+	$(CC) $(CFLAGS) -o $@ $^
 
 logfsck: $(ZLIB_O)
 logfsck: fsck.o lib.o journal.o super.o
-	$(CC) $(CFLAGS) -static -lz -o $@ $^
+	$(CC) $(CFLAGS) -o $@ $^
 
 $(OBJ): kerncompat.h logfs.h logfs_abi.h btree.h
 
