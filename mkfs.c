@@ -176,7 +176,7 @@ static int write_segment_file(struct super_block *sb)
 	int err;
 	u64 ofs;
 
-	buf = calloc(1, sb->blocksize);
+	buf = zalloc(sb->blocksize);
 	if (!buf)
 		return -ENOMEM;
 
@@ -351,11 +351,11 @@ static int make_journal(struct super_block *sb)
 
 	seg = sb->journal_seg[0];
 	/* TODO: add segment to superblock, segfile */
-	journal = calloc(1, sb->segsize);
+	journal = zalloc(sb->segsize);
 	if (!journal)
 		return -ENOMEM;
 
-	scratch = calloc(2, sb->blocksize);
+	scratch = zalloc(2 * sb->blocksize);
 	if (!scratch)
 		return -ENOMEM;
 
@@ -379,7 +379,7 @@ static int make_super(struct super_block *sb)
 	int secsize = ALIGN(sizeof(*ds), sb->writesize);
 	int i, ret;
 
-	sector = calloc(secsize, 1);
+	sector = zalloc(secsize);
 	if (!sector)
 		return -ENOMEM;
 
@@ -459,6 +459,7 @@ static void mkfs(struct super_block *sb)
 	char answer[4096]; /* I don't care about overflows */
 	int ret;
 
+	BUG_ON(!sb);
 	if (user_segshift + 1)
 		segshift = user_segshift;
 	if (user_blockshift + 1)
@@ -476,6 +477,7 @@ static void mkfs(struct super_block *sb)
 		fail("writeshift too large (max 12)");
 	sb->segsize = 1 << segshift;
 	sb->blocksize = 1 << blockshift;
+	sb->blocksize_bits = blockshift;
 	sb->writesize = 1 << writeshift;
 
 	sb->no_segs = sb->fssize >> segshift;
@@ -502,7 +504,7 @@ static void mkfs(struct super_block *sb)
 			fail("aborting...");
 	}
 
-	sb->segment_entry = calloc(sb->no_segs, sizeof(sb->segment_entry[0]));
+	sb->segment_entry = zalloc(sb->no_segs * sizeof(sb->segment_entry[0]));
 	if (!sb->segment_entry)
 		fail("out of memory");
 

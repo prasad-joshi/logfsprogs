@@ -28,6 +28,7 @@ struct super_block {
 	u32 segsize;
 	u32 erasesize;
 	u32 blocksize;
+	int blocksize_bits;
 	u32 writesize;
 	u32 no_segs;
 	u32 journal_seg[LOGFS_JOURNAL_SEGS];
@@ -61,7 +62,10 @@ static inline __be32 logfs_crc32(void *data, size_t len, size_t skip)
 
 static inline void *zalloc(size_t bytes)
 {
-	return calloc(1, bytes);
+	void *p = malloc(bytes);
+
+	memset(p, 0, bytes);
+	return p;
 }
 
 /* readwrite.c */

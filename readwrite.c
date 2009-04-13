@@ -15,7 +15,7 @@
 
 static int child_no(struct super_block *sb, u64 bix)
 {
-	return bix & (sb->blocksize - 1);
+	return bix & ((sb->blocksize / sizeof(__be64)) - 1);
 }
 
 struct inode *find_or_create_inode(struct super_block *sb, u64 ino)
@@ -25,7 +25,7 @@ struct inode *find_or_create_inode(struct super_block *sb, u64 ino)
 
 	inode = btree_lookup64(&sb->ino_tree, ino);
 	if (!inode) {
-		inode = calloc(1, sizeof(*inode));
+		inode = zalloc(sizeof(*inode) + sb->blocksize);
 		if (!inode)
 			return NULL;
 		err = btree_insert64(&sb->ino_tree, ino, inode);
@@ -44,7 +44,7 @@ static __be64 *find_or_create_block(struct super_block *sb, struct inode *inode,
 
 	block = btree_lookup64(tree, bix);
 	if (!block) {
-		block = calloc(1, sb->blocksize);
+		block = zalloc(sb->blocksize);
 		if (!block)
 			return NULL;
 		err = btree_insert64(tree, bix, block);
@@ -66,20 +66,29 @@ static int write_direct(struct super_block *sb, struct inode *inode, u64 ino,
 	return 0;
 }
 
+static u64 bixmask(struct super_block *sb, u8 level)
+{
+	if (level == 0)
+		return 0;
+	return (1 << ((sb->blocksize_bits - 3) * level)) - 1;
+}
+
 static int write_loop(struct super_block *sb, struct inode *inode, u64 ino,
 	       	u64 bix, u8 level, u8 type, void *buf)
 {
+	u64 parent_bix;
 	__be64 *iblock;
 	s64 ofs;
 
-	iblock = find_or_create_block(sb, inode, bix, level + 1);
+	parent_bix = bix | bixmask(sb, level + 1);
+	iblock = find_or_create_block(sb, inode, parent_bix, level + 1);
 	if (!iblock)
 		return -ENOMEM;
 	ofs = logfs_segment_write(sb, buf, sb->blocksize, type, ino, bix,
 			level);
 	if (ofs < 0)
 		return ofs;
-	iblock[bix & child_no(sb, bix)] = cpu_to_be64(ofs);
+	iblock[child_no(sb, bix)] = cpu_to_be64(ofs);
 	return 0;
 }
 
