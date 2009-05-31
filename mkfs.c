@@ -280,7 +280,10 @@ static size_t je_alias(struct super_block *sb, void *_oa, u16 *type)
 	struct logfs_segment_entry *se;
 	u64 val;
 	int i, k;
+	int ashift, amask;
 
+	ashift = blockshift - 3; /* 8 bytes per alias */
+	amask = (1 << ashift) - 1;
 	memset(oa, 0, sb->blocksize);
 	k = 0;
 	for (i = 0; i < sb->no_segs; i++) {
@@ -289,10 +292,10 @@ static size_t je_alias(struct super_block *sb, void *_oa, u16 *type)
 			val = (u64)be32_to_cpu(se->ec_level) << 32 |
 				be32_to_cpu(se->valid);
 			oa[k].ino = cpu_to_be64(LOGFS_INO_SEGFILE);
-			oa[k].bix = cpu_to_be64(i >> blockshift);
+			oa[k].bix = cpu_to_be64(i >> ashift);
 			oa[k].val = cpu_to_be64(val);
 			oa[k].level = 0;
-			oa[k].child_no = cpu_to_be16(i & (sb->blocksize - 1));
+			oa[k].child_no = cpu_to_be16(i & amask);
 			k++;
 		}
 	}
