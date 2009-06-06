@@ -59,7 +59,7 @@ static int write_direct(struct super_block *sb, struct inode *inode, u64 ino,
 {
 	s64 ofs;
 
-	ofs = logfs_segment_write(sb, buf, sb->blocksize, type, ino, bix, 0);
+	ofs = logfs_segment_write(sb, buf, type, ino, bix, 0);
 	if (ofs < 0)
 		return ofs;
 	inode->di.di_data[bix] = cpu_to_be64(ofs);
@@ -84,8 +84,7 @@ static int write_loop(struct super_block *sb, struct inode *inode, u64 ino,
 	iblock = find_or_create_block(sb, inode, parent_bix, level + 1);
 	if (!iblock)
 		return -ENOMEM;
-	ofs = logfs_segment_write(sb, buf, sb->blocksize, type, ino, bix,
-			level);
+	ofs = logfs_segment_write(sb, buf, type, ino, bix, level);
 	if (ofs < 0)
 		return ofs;
 	iblock[child_no(sb, bix)] = cpu_to_be64(ofs);
@@ -156,8 +155,7 @@ int logfs_file_flush(struct super_block *sb, u64 ino)
 	bix = btree_last64(tree);
 	iblock = btree_remove64(tree, bix);
 	BUG_ON(!iblock);
-	ofs = logfs_segment_write(sb, iblock, sb->blocksize, OBJ_BLOCK, ino,
-			bix, level);
+	ofs = logfs_segment_write(sb, iblock, OBJ_BLOCK, ino, bix, level);
 	if (ofs < 0)
 		return ofs;
 	inode->di.di_data[INDIRECT_INDEX] = cpu_to_be64(ofs);

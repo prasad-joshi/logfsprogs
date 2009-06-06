@@ -116,13 +116,28 @@ static int grow_inode(struct super_block *sb, u64 ino, size_t len)
 	return 0;
 }
 
-s64 logfs_segment_write(struct super_block *sb, void *buf, u16 len, u8 type,
+static int obj_len(struct super_block *sb, int obj_type)
+{
+	switch (obj_type) {
+	case OBJ_DENTRY:
+		return sizeof(struct logfs_disk_dentry);
+	case OBJ_INODE:
+		return sizeof(struct logfs_disk_inode);
+	case OBJ_BLOCK:
+		return sb->blocksize;
+	default:
+		BUG();
+	}
+}
+
+s64 logfs_segment_write(struct super_block *sb, void *buf, u8 type,
 		u64 ino, u64 bix, u8 level)
 {
 	struct logfs_object_header oh;
 	struct logfs_area *area;
 	int err;
 	s64 ofs;
+	u16 len = obj_len(sb, type);
 
 	if (ino == LOGFS_INO_MASTER)
 		level += LOGFS_MAX_LEVELS;
@@ -149,6 +164,8 @@ s64 logfs_segment_write(struct super_block *sb, void *buf, u16 len, u8 type,
 	err = grow_inode(sb, ino, sizeof(oh) + len);
 	if (err)
 		return err;
+	printf("logfs_segment_write(%llx, %llx %x) type %x len %x to %llx\n",
+			ino, bix, level, type, len, ofs);
 	return ofs;
 }
 

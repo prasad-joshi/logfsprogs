@@ -76,7 +76,7 @@ int logfs_file_flush(struct super_block *sb, u64 ino);
 
 /* segment.c */
 u32 get_segment(struct super_block *sb);
-s64 logfs_segment_write(struct super_block *sb, void *buf, u16 len, u8 type,
+s64 logfs_segment_write(struct super_block *sb, void *buf, u8 type,
 		u64 ino, u64 bix, u8 level);
 int flush_segments(struct super_block *sb);
 

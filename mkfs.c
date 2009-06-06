@@ -254,7 +254,7 @@ static size_t je_anchor(struct super_block *sb, void *_da, u16 *type)
 
 	memset(da, 0, sizeof(*da));
 	da->da_last_ino	= cpu_to_be64(LOGFS_RESERVED_INOS);
-	da->da_size	= cpu_to_be64((LOGFS_INO_SEGFILE+1) * sb->blocksize);
+	da->da_size	= cpu_to_be64(LOGFS_RESERVED_INOS * sb->blocksize);
 	da->da_used_bytes = inode->di.di_used_bytes;
 	for (i = 0; i < LOGFS_EMBEDDED_FIELDS; i++)
 		da->da_data[i] = inode->di.di_data[i];
