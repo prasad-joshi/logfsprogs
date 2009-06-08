@@ -215,7 +215,7 @@ static int write_rootdir(struct super_block *sb)
 	if (compress_rootdir)
 		di->di_flags |= cpu_to_be32(LOGFS_IF_COMPRESSED);
 	di->di_mode	= cpu_to_be16(S_IFDIR | 0755);
-	di->di_refcount	= cpu_to_be32(2);
+	di->di_refcount	= cpu_to_be32(1);
 	return write_inode(sb, LOGFS_INO_ROOT);
 }
 
