@@ -164,8 +164,6 @@ s64 logfs_segment_write(struct super_block *sb, void *buf, u8 type,
 	err = grow_inode(sb, ino, sizeof(oh) + len);
 	if (err)
 		return err;
-	printf("logfs_segment_write(%llx, %llx %x) type %x len %x to %llx\n",
-			ino, bix, level, type, len, ofs);
 	return ofs;
 }
 
