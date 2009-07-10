@@ -13,6 +13,21 @@
 #include "logfs_abi.h"
 #include "logfs.h"
 
+static unsigned long __get_bits(u64 val, int skip, int no)
+{
+	u64 ret = val;
+
+	ret >>= skip * no;
+	ret <<= 64 - no;
+	ret >>= 64 - no;
+	return ret;
+}
+
+static unsigned long get_bits(struct super_block *sb, u64 bix, u8 level)
+{
+	return __get_bits(bix, level, sb->blocksize_bits - 3);
+}
+
 static int child_no(struct super_block *sb, u64 bix)
 {
 	return bix & ((sb->blocksize / sizeof(__be64)) - 1);
@@ -87,7 +102,7 @@ static int write_loop(struct super_block *sb, struct inode *inode, u64 ino,
 	ofs = logfs_segment_write(sb, buf, type, ino, bix, level);
 	if (ofs < 0)
 		return ofs;
-	iblock[child_no(sb, bix)] = cpu_to_be64(ofs);
+	iblock[get_bits(sb, bix, level)] = cpu_to_be64(ofs);
 	return 0;
 }
 

@@ -11,6 +11,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
+#include <libgen.h>
 #include <linux/fs.h>
 #include <linux/types.h>
 #include <stdint.h>
@@ -40,7 +41,7 @@ static unsigned user_segshift = -1;
 static unsigned user_blockshift = -1;
 static unsigned user_writeshift = -1;
 
-static u8 segshift = 17;
+static u8 segshift = 18;
 static u8 blockshift = 12;
 static u8 writeshift = 0;
 static u32 no_journal_segs = 4;
@@ -99,12 +100,65 @@ error:
 
 static int mtd_erase(struct super_block *sb, u64 ofs, size_t size)
 {
-	struct erase_info_user ei;
+	if (ofs >= 0x100000000ull) {
+		struct erase_info_user64 ei;
 
-	ei.start = ofs;
-	ei.length = size;
+		ei.start = ofs;
+		ei.length = size;
 
-	return ioctl(sb->fd, MEMERASE, &ei);
+		return ioctl(sb->fd, MEMERASE64, &ei);
+	} else {
+		struct erase_info_user ei;
+
+		ei.start = ofs;
+		ei.length = size;
+
+		return ioctl(sb->fd, MEMERASE, &ei);
+	}
+}
+
+static int mtd_prepare_sb(struct super_block *sb)
+{
+	u32 segno;
+	int err;
+
+	/* 1st superblock at the beginning */
+	segno = get_segment(sb);
+	sb->segment_entry[segno].ec_level = ec_level(1, 0);
+	sb->segment_entry[segno].valid = cpu_to_be32(RESERVED);
+	sb->sb_ofs1 = (u64)segno * sb->segsize;
+
+	/* 2nd superblock at the end */
+	for (segno = sb->no_segs - 1; segno > sb->no_segs - 64; segno--) {
+		err = mtd_erase(sb, (u64)segno * sb->segsize, sb->segsize);
+		if (err)
+			continue;
+		sb->segment_entry[segno].ec_level = ec_level(1, 0);
+		sb->segment_entry[segno].valid = cpu_to_be32(RESERVED);
+		sb->sb_ofs2 = (u64)(segno + 1) * sb->segsize - 0x1000;
+		break;
+	}
+	if (segno == sb->no_segs - 64 || sb->sb_ofs2 <= sb->sb_ofs1)
+		return -EIO;
+	return 0;
+}
+
+static int bdev_prepare_sb(struct super_block *sb)
+{
+	u32 segno;
+
+	/* 1st superblock at the beginning */
+	segno = get_segment(sb);
+	sb->segment_entry[segno].ec_level = ec_level(1, 0);
+	sb->segment_entry[segno].valid = cpu_to_be32(RESERVED);
+	sb->sb_ofs1 = (u64)segno * sb->segsize;
+
+	/* 2nd superblock at the end */
+	segno = sb->no_segs - 1;
+	sb->segment_entry[segno].ec_level = ec_level(1, 0);
+	sb->segment_entry[segno].valid = cpu_to_be32(RESERVED);
+	sb->sb_ofs2 = (sb->fssize & ~0xfffULL) - 0x1000;
+	return 0;
 }
 
 static int bdev_write(struct super_block *sb, u64 ofs, size_t size, void *buf)
@@ -130,11 +184,13 @@ static int bdev_erase(struct super_block *sb, u64 ofs, size_t size)
 }
 
 static const struct logfs_device_operations mtd_ops = {
+	.prepare_sb = mtd_prepare_sb,
 	.write = bdev_write,
 	.erase = mtd_erase,
 };
 
 static const struct logfs_device_operations bdev_ops = {
+	.prepare_sb = bdev_prepare_sb,
 	.write = bdev_write,
 	.erase = bdev_erase,
 };
@@ -427,23 +483,6 @@ static int make_super(struct super_block *sb)
 
 /* main stuff */
 
-static void prepare_sb(struct super_block *sb)
-{
-	u32 segno;
-
-	/* 1st superblock at the beginning */
-	segno = get_segment(sb);
-	sb->segment_entry[segno].ec_level = ec_level(1, 0);
-	sb->segment_entry[segno].valid = cpu_to_be32(RESERVED);
-	sb->sb_ofs1 = (u64)segno * sb->segsize;
-
-	/* 2nd superblock at the end */
-	segno = sb->no_segs - 1;
-	sb->segment_entry[segno].ec_level = ec_level(1, 0);
-	sb->segment_entry[segno].valid = cpu_to_be32(RESERVED);
-	sb->sb_ofs2 = (sb->fssize & ~0xfffULL) - 0x1000;
-}
-
 static void prepare_journal(struct super_block *sb)
 {
 	int i;
@@ -476,7 +515,7 @@ static void mkfs(struct super_block *sb)
 		fail("segment shift must be larger than block shift");
 	if (blockshift != 12)
 		fail("blockshift must be 12");
-	if (writeshift >= 12)
+	if (writeshift > 12)
 		fail("writeshift too large (max 12)");
 	sb->segsize = 1 << segshift;
 	sb->blocksize = 1 << blockshift;
@@ -511,7 +550,9 @@ static void mkfs(struct super_block *sb)
 	if (!sb->segment_entry)
 		fail("out of memory");
 
-	prepare_sb(sb);
+	ret = sb->dev_ops->prepare_sb(sb);
+	if (ret)
+		fail("could not erase two superblocks");
 	prepare_journal(sb);
 
 	ret = write_segment_file(sb);
@@ -588,6 +629,20 @@ static struct super_block *__open_device(const char *name)
 			fail("device writesize must be a power of 2");
 
 		sb->fssize = mtd.size;
+		{
+			/* The new "improved" way of doing things */
+			char buf[256];
+			int fd;
+
+			sprintf(buf, "/sys/class/mtd/%s/size",
+					basename((char *)name));
+			fd = open(buf, O_RDONLY);
+			if (fd >= 0) {
+				read(fd, buf, 256);
+				sb->fssize = strtoull(buf, NULL, 0);
+				close(fd);
+			}
+		}
 		break;
 	case S_IFREG:
 		sb->fssize = stat.st_size;

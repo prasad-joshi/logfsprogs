@@ -22,7 +22,9 @@ static inline void hexdump(const char *prefix, void *buf, size_t len)
 	printf("%s", prefix);
 	for (i = 0; i < len; i++) {
 		printf("%02x ", c[i]);
-		if ((i & 0xf) == 0xf)
+		if (i % 8 == 7)
+			printf(" ");
+		if (i % 16 == 15)
 			printf("\n");
 	}
 	printf("\n");

@@ -10,6 +10,7 @@
 
 struct super_block;
 struct logfs_device_operations {
+	int (*prepare_sb)(struct super_block *sb);
 	int (*write)(struct super_block *sb, u64 ofs, size_t size, void *buf);
 	int (*erase)(struct super_block *sb, u64 ofs, size_t size);
 	s64 (*scan_super)(struct super_block *sb);
