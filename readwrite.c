@@ -28,7 +28,7 @@ static unsigned long get_bits(struct super_block *sb, u64 bix, u8 level)
 	return __get_bits(bix, level, sb->blocksize_bits - 3);
 }
 
-static int child_no(struct super_block *sb, u64 bix)
+static inline int child_no(struct super_block *sb, u64 bix)
 {
 	return bix & ((sb->blocksize / sizeof(__be64)) - 1);
 }
