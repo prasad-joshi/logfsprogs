@@ -193,6 +193,10 @@ struct logfs_segment_header {
 
 SIZE_CHECK(logfs_segment_header, LOGFS_SEGMENT_HEADERSIZE);
 
+#define LOGFS_FEATURES_INCOMPAT		(0ull)
+#define LOGFS_FEATURES_RO_COMPAT	(0ull)
+#define LOGFS_FEATURES_COMPAT		(0ull)
+
 /**
  * struct logfs_disk_super - on-medium superblock
  *
@@ -296,6 +300,7 @@ SIZE_CHECK(logfs_object_header, LOGFS_OBJECT_HEADERSIZE);
  * LOGFS_INO_SEGFILE	- per-segment used bytes and erase count
  */
 enum {
+	LOGFS_INO_MAPPING	= 0x00,
 	LOGFS_INO_MASTER	= 0x01,
 	LOGFS_INO_ROOT		= 0x02,
 	LOGFS_INO_SEGFILE	= 0x03,
@@ -417,7 +422,6 @@ SIZE_CHECK(logfs_segment_entry, 8);
  *				not including header
  * @h_datalen:			length of uncompressed data
  * @h_type:			JE type
- * @h_version:			unnormalized version of journal entry
  * @h_compr:			compression type
  * @h_pad:			reserved
  */
@@ -426,9 +430,8 @@ struct logfs_journal_header {
 	__be16	h_len;
 	__be16	h_datalen;
 	__be16	h_type;
-	__be16	h_version;
 	__u8	h_compr;
-	__u8	h_pad[3];
+	__u8	h_pad[5];
 };
 
 SIZE_CHECK(logfs_journal_header, 16);
@@ -466,6 +469,9 @@ struct logfs_je_area {
 } __attribute__((packed));
 
 SIZE_CHECK(logfs_je_area, 10);
+
+#define MAX_JOURNAL_HEADER \
+	(sizeof(struct logfs_journal_header) + sizeof(struct logfs_je_area))
 
 /**
  * struct logfs_je_dynsb - dynamic superblock
@@ -612,9 +618,8 @@ enum {
 	JE_COMMIT	= 0x02,
 	JE_DYNSB	= 0x03,
 	JE_ANCHOR	= 0x04,
-	JE_ERASECOUNT	= 0x05,	/* move to segment file */
+	JE_ERASECOUNT	= 0x05,
 	JE_SPILLOUT	= 0x06,
-	JE_SEG_ALIAS	= 0x0b,
 	JE_OBJ_ALIAS	= 0x0d,
 	JE_AREA		= 0x0e,
 

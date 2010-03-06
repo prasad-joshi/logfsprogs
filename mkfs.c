@@ -47,8 +47,6 @@ static u8 writeshift = 0;
 static u32 no_journal_segs = 4;
 static u32 bad_seg_reserve = 4;
 
-static u16 version;
-
 /* journal entries */
 static __be64 je_array[64];
 static int no_je;
@@ -282,12 +280,13 @@ static size_t __write_header(struct logfs_journal_header *jh, size_t len,
 {
 	jh->h_len	= cpu_to_be16(len);
 	jh->h_type	= cpu_to_be16(type);
-	jh->h_version	= cpu_to_be16(++version);
 	jh->h_datalen	= cpu_to_be16(datalen);
 	jh->h_compr	= compr;
 	jh->h_pad[0]	= 'h';
-	jh->h_pad[1]	= 'a';
-	jh->h_pad[2]	= 't';
+	jh->h_pad[1]	= 'e';
+	jh->h_pad[2]	= 'a';
+	jh->h_pad[3]	= 'd';
+	jh->h_pad[4]	= 'r';
 	jh->h_crc	= logfs_crc32(jh, len + sizeof(*jh), 4);
 	return ALIGN(len, 16) + sizeof(*jh);
 }
