@@ -155,7 +155,7 @@ s64 logfs_segment_write(struct super_block *sb, void *buf, u8 type,
 	oh.data_crc = logfs_crc32(buf, len, 0);
 
 	init_area(sb, area, level);
-	if (area->used_bytes + sizeof(oh) * sb->blocksize > sb->segsize) {
+	if (area->used_bytes + sizeof(oh) + sb->blocksize > sb->segsize) {
 		err = finish_area(sb, area, 0, level);
 		if (err)
 			return err;
