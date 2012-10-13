@@ -539,6 +539,8 @@ static void mkfs(struct super_block *sb)
 		fail("blockshift must be 12");
 	if (writeshift > 16)
 		fail("writeshift too large (max 16)");
+	if (segshift < writeshift)
+		fail("segment shift must be larger than write shift");
 	sb->segsize = 1 << segshift;
 	sb->blocksize = 1 << blockshift;
 	sb->blocksize_bits = blockshift;
