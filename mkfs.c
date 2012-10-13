@@ -155,7 +155,7 @@ static int bdev_prepare_sb(struct super_block *sb)
 	segno = sb->no_segs - 1;
 	sb->segment_entry[segno].ec_level = ec_level(1, 0);
 	sb->segment_entry[segno].valid = cpu_to_be32(RESERVED);
-	sb->sb_ofs2 = (sb->fssize & ~0xfffULL) - 0x1000;
+	sb->sb_ofs2 = (u64)(segno) * sb->segsize - 0x1000;
 	return 0;
 }
 
