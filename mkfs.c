@@ -159,12 +159,35 @@ static int bdev_prepare_sb(struct super_block *sb)
 	return 0;
 }
 
+int safe_pwrite(int fd, char *buf, size_t size, u64 ofs)
+{
+	ssize_t ret;
+	size_t  remaining;
+
+	remaining = size;
+	while (remaining > 0) {
+		ret = pwrite(fd, buf, remaining, ofs);
+		if (ret < 0) {
+			if (errno == EINTR)
+				continue;
+
+			fprintf(stderr, "write failed: %s\n", strerror(errno));
+			return ret;
+		}
+
+		remaining -= ret;
+		ofs += ret;
+		buf += ret;
+	}
+	return 0;
+}
+
 static int bdev_write(struct super_block *sb, u64 ofs, size_t size, void *buf)
 {
 	ssize_t ret;
 
-	ret = pwrite(sb->fd, buf, size, ofs);
-	if (ret != size)
+	ret = safe_pwrite(sb->fd, buf, size, ofs);
+	if (ret < 0)
 		return -EIO;
 	return 0;
 }
